@@ -45,32 +45,20 @@ public class ClipboardEntry : INotifyPropertyChanged
     {
         get
         {
-            if (_thumbnail == null)
-            {
-                if (ImageData != null) _thumbnail = CreateThumbnail();
-                else if (IsImageFile) _thumbnail = CreateFileThumbnail();
-            }
+            if (_thumbnail == null && ImageData != null)
+                _thumbnail = CreateThumbnail();
             return _thumbnail;
         }
     }
 
-    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".ico"
-    };
-
-    public bool IsImageFile => Type == EntryType.Files
-        && FilePaths is { Length: >= 1 }
-        && ImageExtensions.Contains(Path.GetExtension(FilePaths[0]));
-
-    public bool HasThumbnail => Type == EntryType.Image || IsImageFile;
-    public bool HasIcon => !HasThumbnail;
+    public bool HasThumbnail => Type == EntryType.Image;
+    public bool HasIcon => Type != EntryType.Image;
 
     public string TypeIcon => Type switch
     {
         EntryType.Text => IsQuickPaste ? "⚡" : "📝",
         EntryType.Image => "🖼️",
-        EntryType.Files => IsImageFile ? "🖼️" : "📁",
+        EntryType.Files => "📁",
         _ => ""
     };
 
@@ -155,24 +143,6 @@ public class ClipboardEntry : INotifyPropertyChanged
             var bi = new BitmapImage();
             bi.BeginInit();
             bi.StreamSource = ms;
-            bi.CacheOption = BitmapCacheOption.OnLoad;
-            bi.DecodePixelWidth = 64;
-            bi.EndInit();
-            bi.Freeze();
-            return bi;
-        }
-        catch { return null; }
-    }
-
-    private BitmapSource? CreateFileThumbnail()
-    {
-        try
-        {
-            var path = FilePaths![0];
-            if (!File.Exists(path)) return null;
-            var bi = new BitmapImage();
-            bi.BeginInit();
-            bi.UriSource = new Uri(path);
             bi.CacheOption = BitmapCacheOption.OnLoad;
             bi.DecodePixelWidth = 64;
             bi.EndInit();

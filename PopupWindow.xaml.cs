@@ -499,8 +499,8 @@ public partial class PopupWindow : Window
         if (_displayItems.Count > 0)
             ItemsList.SelectedIndex = 0;
 
-        Activate();
-        SearchBox.Focus();
+        Win32.SetForegroundWindow(_hwnd);
+        Win32.SetFocus(_hwnd);
         Keyboard.Focus(SearchBox);
 
         InstallKeyboardHook();
