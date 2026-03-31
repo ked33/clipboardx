@@ -38,6 +38,8 @@ public partial class PopupWindow : Window
     private EntryType? _typeFilter;
     private bool _quickPhraseOnly;
     private ClipboardEntry? _contextEntry;
+    /// <summary>当前标为「待二次 Del 删除」的条目，与 <see cref="ClipboardEntry.IsPendingDelete"/> 同步。</summary>
+    private ClipboardEntry? _pendingDeleteEntry;
 
     private const int PageSize = 8;
     private int _firstVisibleIndex;
@@ -62,6 +64,7 @@ public partial class PopupWindow : Window
     {
         InitializeComponent();
         ItemsList.ItemsSource = _displayItems;
+        ItemsList.SelectionChanged += ItemsList_SelectionChanged;
     }
 
     public void Initialize(AppSettings settings)
@@ -396,6 +399,7 @@ public partial class PopupWindow : Window
 
     private void RefreshFilter()
     {
+        ClearPendingDelete();
         _displayItems.Clear();
         _firstVisibleIndex = 0;
         var query = _searchText.Trim();
@@ -518,6 +522,7 @@ public partial class PopupWindow : Window
         ContextPopup.IsOpen = false;
         PhraseEditPopup.IsOpen = false;
         _phraseEditEntry = null;
+        ClearPendingDelete();
         Hide();
     }
 
@@ -861,6 +866,11 @@ public partial class PopupWindow : Window
                 case Win32.VK_ESCAPE:
                     Dispatcher.BeginInvoke(() =>
                     {
+                        if (_pendingDeleteEntry != null)
+                        {
+                            ClearPendingDelete();
+                            return;
+                        }
                         if (_searchText.Length > 0) { _searchText = ""; RefreshFilter(); }
                         else HidePopup();
                     });
@@ -873,6 +883,9 @@ public partial class PopupWindow : Window
                     return (IntPtr)1;
                 case 0x09: // Tab → cycle type filter
                     Dispatcher.BeginInvoke(CycleTypeFilter);
+                    return (IntPtr)1;
+                case Win32.VK_DELETE:
+                    Dispatcher.BeginInvoke(DeleteSelectedItemWithConfirm);
                     return (IntPtr)1;
             }
 
@@ -932,6 +945,8 @@ public partial class PopupWindow : Window
         AddHint($"{m}+Tab", "短语");
         AddHint("Tab", "筛选");
         AddHint("a-z", "拼音");
+        AddHint("Del×2", "删除");
+        AddHint("Esc", "取消删除线");
     }
 
     private static char? VkToChar(uint vkCode, uint scanCode)
@@ -1024,6 +1039,7 @@ public partial class PopupWindow : Window
     private async void PasteSelectedItem()
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item) return;
+        ClearPendingDelete();
 
         if (!item.IsQuickPaste)
         {
@@ -1078,6 +1094,7 @@ public partial class PopupWindow : Window
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item || item.Type != EntryType.Image) return;
         if (item.ImageData is not { Length: > 0 }) return;
+        ClearPendingDelete();
 
         if (!item.IsQuickPaste)
         {
@@ -1122,6 +1139,20 @@ public partial class PopupWindow : Window
     #endregion
 
     #region UI Event Handlers
+
+    private void ClearPendingDelete()
+    {
+        if (_pendingDeleteEntry == null) return;
+        _pendingDeleteEntry.IsPendingDelete = false;
+        _pendingDeleteEntry = null;
+    }
+
+    private void ItemsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ItemsList.SelectedItem is ClipboardEntry sel && ReferenceEquals(sel, _pendingDeleteEntry))
+            return;
+        ClearPendingDelete();
+    }
 
     private void ItemsList_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
@@ -1200,14 +1231,37 @@ public partial class PopupWindow : Window
     {
         ContextPopup.IsOpen = false;
         if (_contextEntry == null) return;
+        RemoveEntry(_contextEntry);
+    }
 
-        if (_contextEntry.IsQuickPaste)
-            _quickPastes.RemoveAll(q => q.Content == _contextEntry.TextContent);
-
-        _allItems.Remove(_contextEntry);
+    private void RemoveEntry(ClipboardEntry entry)
+    {
+        if (ReferenceEquals(_pendingDeleteEntry, entry))
+        {
+            entry.IsPendingDelete = false;
+            _pendingDeleteEntry = null;
+        }
+        else
+            ClearPendingDelete();
+        if (entry.IsQuickPaste)
+            _quickPastes.RemoveAll(q => q.Content == entry.TextContent);
+        _allItems.Remove(entry);
         RefreshFilter();
+        if (entry.IsQuickPaste) SaveQuickPastes();
+    }
 
-        if (_contextEntry.IsQuickPaste) SaveQuickPastes();
+    /// <summary>Del：首次给当前选中项加删除线；同一项再按 Del 才删除。换选或 Esc 取消删除线。</summary>
+    private void DeleteSelectedItemWithConfirm()
+    {
+        if (ItemsList.SelectedItem is not ClipboardEntry entry) return;
+        if (entry.IsPendingDelete)
+        {
+            RemoveEntry(entry);
+            return;
+        }
+        ClearPendingDelete();
+        entry.IsPendingDelete = true;
+        _pendingDeleteEntry = entry;
     }
 
     private void TypeFilter_Click(object sender, MouseButtonEventArgs e) => CycleTypeFilter();

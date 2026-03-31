@@ -39,6 +39,7 @@ internal static class Win32
     public const uint VK_RIGHT = 0x27;
     public const uint VK_RETURN = 0x0D;
     public const uint VK_ESCAPE = 0x1B;
+    public const uint VK_DELETE = 0x2E;
     public const uint VK_OEM_3 = 0xC0;
 
     [DllImport("user32.dll")]

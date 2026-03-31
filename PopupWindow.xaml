@@ -164,16 +164,46 @@
 
                                 <TextBlock Grid.Column="0" Text="{Binding IndexLabel}"
                                            FontSize="10" TextAlignment="Center"
-                                           Foreground="{DynamicResource MutedText}" VerticalAlignment="Center"/>
+                                           Foreground="{DynamicResource MutedText}" VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                    <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
 
                                 <TextBlock Grid.Column="1" Text="{Binding TypeIcon}"
                                            FontSize="15" Width="28" TextAlignment="Center"
                                            VerticalAlignment="Center"
-                                           Visibility="{Binding IconVisibility}"/>
+                                           Visibility="{Binding IconVisibility}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                    <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
 
                                 <Border Grid.Column="1" Width="48" Height="36"
                                         CornerRadius="4" Margin="0,0,4,0"
                                         Visibility="{Binding ThumbnailVisibility}">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Opacity" Value="1"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                    <Setter Property="Opacity" Value="0.45"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
                                     <Border.Background>
                                         <ImageBrush ImageSource="{Binding Thumbnail}" Stretch="UniformToFill"/>
                                     </Border.Background>
@@ -182,15 +212,45 @@
                                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="4,0,8,0">
                                     <TextBlock Text="{Binding Preview}"
                                                Foreground="{DynamicResource PrimaryText}" FontSize="13"
-                                               TextTrimming="CharacterEllipsis"/>
+                                               TextTrimming="CharacterEllipsis">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                        <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                     <TextBlock Text="{Binding SubInfo}"
                                                Foreground="{DynamicResource MutedText}" FontSize="10"
-                                               Margin="0,2,0,0" Visibility="{Binding SubInfoVisibility}"/>
+                                               Margin="0,2,0,0" Visibility="{Binding SubInfoVisibility}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                        <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                 </StackPanel>
 
                                 <TextBlock Grid.Column="3" Text="{Binding TimeAgo}"
                                            Foreground="{DynamicResource SecondaryText}" FontSize="11"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
+                                                    <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>

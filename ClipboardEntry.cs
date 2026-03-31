@@ -20,6 +20,19 @@ public class ClipboardEntry : INotifyPropertyChanged
     public bool IsQuickPaste { get; set; }
     public string? ShortcutPhrase { get; set; }
 
+    private bool _isPendingDelete;
+    /// <summary>Del 第一次按下时为 true，表示待二次确认删除（删除线提示）。</summary>
+    public bool IsPendingDelete
+    {
+        get => _isPendingDelete;
+        set
+        {
+            if (_isPendingDelete == value) return;
+            _isPendingDelete = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPendingDelete)));
+        }
+    }
+
     private int _displayIndex;
     public int DisplayIndex
     {
