@@ -35,13 +35,13 @@ public partial class App : Application
             return;
         }
 
-        _mutex = new Mutex(true, "ClipboardManager_F7A2E9B0", out bool isNew);
+        _mutex = new Mutex(true, "ClipboardX_F7A2E9B0", out bool isNew);
         if (!isNew)
         {
 #if DEBUG
-            try { Console.WriteLine("剪切板管理器已在运行中（互斥锁），本进程将退出。请查看托盘或结束旧进程。"); } catch { }
+            try { Console.WriteLine("ClipboardX 已在运行中（互斥锁），本进程将退出。请查看托盘或结束旧进程。"); } catch { }
 #endif
-            System.Windows.MessageBox.Show("剪切板管理器已在运行中", "提示",
+            System.Windows.MessageBox.Show("ClipboardX 已在运行中", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown();
             return;
@@ -64,7 +64,7 @@ public partial class App : Application
         _trayIcon = new WinForms.NotifyIcon
         {
             Icon = CreateTrayIcon(),
-            Text = $"剪切板管理器 ({_settings.HotkeyDisplayName})",
+            Text = $"ClipboardX ({_settings.HotkeyDisplayName})",
             Visible = true
         };
 
@@ -88,7 +88,7 @@ public partial class App : Application
 #if DEBUG
         try
         {
-            Console.WriteLine("剪切板管理器已在运行。");
+            Console.WriteLine("ClipboardX 已在运行。");
             Console.WriteLine("- dotnet run 时任务管理器里进程名多为「dotnet」，属于正常情况。");
             Console.WriteLine("- 图标在系统托盘：任务栏右侧「显示隐藏的图标」展开查找（蓝色剪贴板样式）。");
             Console.WriteLine("- 若已有一份在跑，再运行会弹窗提示「已在运行中」。");
@@ -101,7 +101,7 @@ public partial class App : Application
     private void UpdateTrayTooltip()
     {
         if (_trayIcon != null)
-            _trayIcon.Text = $"剪切板管理器 ({_settings.HotkeyDisplayName})";
+            _trayIcon.Text = $"ClipboardX ({_settings.HotkeyDisplayName})";
     }
 
     private static void ShowAboutDialog()
@@ -113,7 +113,7 @@ public partial class App : Application
             "邮箱：chaoji000010@163.com";
         System.Windows.MessageBox.Show(
             body,
-            "关于剪切板管理器",
+            "关于 ClipboardX",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }

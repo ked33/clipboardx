@@ -49,11 +49,16 @@ public class AppSettings
         _ => $"0x{vk:X2}"
     };
 
-    private static readonly string SettingsDir = Path.Combine(
+    private static readonly string LegacySettingsDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "ClipboardManager");
 
+    private static readonly string SettingsDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "ClipboardX");
+
     private static readonly string SettingsFile = Path.Combine(SettingsDir, "settings.json");
+    private static readonly string LegacySettingsFile = Path.Combine(LegacySettingsDir, "settings.json");
 
     public static AppSettings Load()
     {
@@ -68,6 +73,19 @@ public class AppSettings
                     // 旧版 settings.json 无此字段时 Json 反序列化为 false，产品默认应为开启
                     if (!doc.RootElement.TryGetProperty(nameof(RunAtStartup), out _))
                         settings.RunAtStartup = true;
+                    return settings;
+                }
+            }
+
+            if (File.Exists(LegacySettingsFile))
+            {
+                var json = File.ReadAllText(LegacySettingsFile);
+                using (var doc = JsonDocument.Parse(json))
+                {
+                    var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
+                    if (!doc.RootElement.TryGetProperty(nameof(RunAtStartup), out _))
+                        settings.RunAtStartup = true;
+                    settings.Save();
                     return settings;
                 }
             }

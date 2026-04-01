@@ -8,24 +8,24 @@ using Microsoft.Win32;
 namespace ClipboardManager;
 
 /// <summary>
-/// 将程序安装到当前用户目录（%LocalAppData%\Programs\ClipboardManager），并注册“应用和功能”卸载项。
+/// 将程序安装到当前用户目录（%LocalAppData%\Programs\ClipboardX），并注册“应用和功能”卸载项。
 /// </summary>
 public static class PerUserInstall
 {
-    public const string UninstallRegistryKeyName = "ClipboardManager";
-    private const string PublisherName = "ClipboardManager";
+    public const string UninstallRegistryKeyName = "ClipboardX";
+    private const string PublisherName = "ClipboardX";
 
     private static readonly string InstallRootRelative =
-        Path.Combine("Programs", "ClipboardManager");
+        Path.Combine("Programs", "ClipboardX");
 
     public static string InstallDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             InstallRootRelative);
 
     public static string InstalledExecutablePath =>
-        Path.Combine(InstallDirectory, "ClipboardManager.exe");
+        Path.Combine(InstallDirectory, "ClipboardX.exe");
 
-    public static string DisplayName => "剪切板管理器";
+    public static string DisplayName => "ClipboardX";
 
     /// <summary>当前用户「开始」菜单程序文件夹中的快捷方式路径。</summary>
     public static string StartMenuShortcutPath =>
@@ -43,7 +43,7 @@ public static class PerUserInstall
     /// <c>dotnet.exe</c> 直接托管 dll 时 ProcessPath 为 dotnet，会跳过。
     /// </summary>
     /// <remarks>
-    /// <c>dotnet run</c> 实际会启动 <c>bin\...\ClipboardManager.exe</c> apphost，ProcessPath 不是 dotnet；
+    /// <c>dotnet run</c> 实际会启动 <c>bin\...\ClipboardX.exe</c> apphost，ProcessPath 不是 dotnet；
     /// 若仅复制 exe 而安装目录无同名 dll，框架依赖部署会启动失败，故 Debug 构建或需整套文件复制时另有处理。
     /// </remarks>
     public static bool ShouldUsePerUserInstallPipeline()
@@ -104,8 +104,8 @@ public static class PerUserInstall
     {
         var ver = AppInfo.DisplayVersion;
         var verify = System.Windows.MessageBox.Show(
-            $"将卸载剪切板管理器（版本 {ver}）、移除开始菜单快捷方式、开机启动与「应用和功能」条目，并删除安装目录中的程序文件。\n\n是否同时删除配置与历史记录？（%AppData%\\ClipboardManager）\n\n「是」删除程序与配置；「否」只删程序；「取消」中止。",
-            $"卸载剪切板管理器 — {ver}",
+            $"将卸载 ClipboardX（版本 {ver}）、移除开始菜单快捷方式、开机启动与「应用和功能」条目，并删除安装目录中的程序文件。\n\n是否同时删除配置与历史记录？（%AppData%\\ClipboardX，旧版可能在 ClipboardManager）\n\n「是」删除程序与配置；「否」只删程序；「取消」中止。",
+            $"卸载 ClipboardX — {ver}",
             System.Windows.MessageBoxButton.YesNoCancel,
             System.Windows.MessageBoxImage.Question);
 
@@ -135,15 +135,21 @@ public static class PerUserInstall
 
         if (removeAppData)
         {
-            try
+            foreach (var folder in new[] { "ClipboardX", "ClipboardManager" })
             {
-                var appDataDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "ClipboardManager");
-                if (Directory.Exists(appDataDir))
-                    Directory.Delete(appDataDir, recursive: true);
+                try
+                {
+                    var appDataDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        folder);
+                    if (Directory.Exists(appDataDir))
+                        Directory.Delete(appDataDir, recursive: true);
+                }
+                catch
+                {
+                    // ignore
+                }
             }
-            catch { /* ignore */ }
         }
 
         TryRemoveStartMenuShortcut();
@@ -212,7 +218,7 @@ public static class PerUserInstall
     }
 
     /// <summary>
-    /// 更新或创建开始菜单中的「剪切板管理器」快捷方式（指向已安装的 exe）。
+    /// 更新或创建开始菜单中的 ClipboardX 快捷方式（指向已安装的 exe）。
     /// </summary>
     public static void EnsureStartMenuShortcut(string targetExePath)
     {
@@ -297,8 +303,8 @@ public static class PerUserInstall
             var source = Environment.ProcessPath!;
             var sourceDir = Path.GetDirectoryName(source)!;
 
-            // 框架依赖：apphost 旁有 ClipboardManager.dll，需整套复制；单文件发布仅有大 exe 则无此文件
-            if (File.Exists(Path.Combine(sourceDir, "ClipboardManager.dll")))
+            // 框架依赖：apphost 旁有 ClipboardX.dll，需整套复制；单文件发布仅有大 exe 则无此文件
+            if (File.Exists(Path.Combine(sourceDir, "ClipboardX.dll")))
                 CopyFrameworkDeploymentFiles(sourceDir, InstallDirectory);
             else
                 File.Copy(source, InstalledExecutablePath, overwrite: true);
@@ -308,7 +314,7 @@ public static class PerUserInstall
             System.Windows.MessageBox.Show(
                 "未能复制程序到安装目录（可能被杀软拦截、旧进程未退出导致文件被占用、或无权写入）：\n" +
                 ex.Message +
-                "\n\n可在任务管理器中结束「ClipboardManager」后重试，或注销/重启后再试。\n" +
+                "\n\n可在任务管理器中结束「ClipboardX」后重试，或注销/重启后再试。\n" +
                 "将尝试从当前位置继续运行。",
                 DisplayName, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
             return false;
@@ -342,7 +348,7 @@ public static class PerUserInstall
     }
 
     /// <summary>
-    /// 结束「可执行文件路径等于安装目录下 ClipboardManager.exe」的进程，避免覆盖时被 Windows 锁定导致 Access denied。
+    /// 结束「可执行文件路径等于安装目录下 ClipboardX.exe」的进程，避免覆盖时被 Windows 锁定导致 Access denied。
     /// 典型场景：卸载后托盘进程未退出、或延迟删除尚未完成。
     /// </summary>
     private static void TryStopProcessesRunningFromInstallDirectory()

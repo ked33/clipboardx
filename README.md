@@ -1,4 +1,4 @@
-# ClipboardManager
+# ClipboardX
 
 **[下载最新版 (Releases)](https://github.com/chaojimct/clipboardx/releases)** · [源码](https://github.com/chaojimct/clipboardx)
 
@@ -7,15 +7,15 @@
 ## 下载与安装
 
 1. 打开 **[Releases](https://github.com/chaojimct/clipboardx/releases)**，在最新版本 Assets 中选择 zip：
-   - **`ClipboardManager-x.x.x-win-x64-no-runtime.zip`** — 体积小，需本机已安装 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)
-   - **`ClipboardManager-x.x.x-win-x64-self-contained.zip`** — 自带运行时，无需单独安装 .NET
-2. 解压后双击 **`ClipboardManager.exe`** 运行。若从压缩包等临时目录启动，程序会复制到 `%LocalAppData%\Programs\ClipboardManager` 并在「应用和功能」中注册卸载项；托盘菜单 **关于** 可查看当前版本与主页链接。
+   - **`ClipboardX-x.x.x-win-x64-no-runtime.zip`** — 体积小，需本机已安装 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)
+   - **`ClipboardX-x.x.x-win-x64-self-contained.zip`** — 自带运行时，无需单独安装 .NET
+2. 解压后双击 **`ClipboardX.exe`** 运行。若从压缩包等临时目录启动，程序会复制到 `%LocalAppData%\Programs\ClipboardX` 并在「应用和功能」中注册卸载项；托盘菜单 **关于** 可查看当前版本与主页链接。
 
 ### 首次运行出现「Windows 已保护你的电脑」（SmartScreen）
 
 从互联网下载的未签名或低信誉 exe 常被 **Microsoft Defender SmartScreen** 拦截，属 Windows 默认策略，并非病毒判定。
 
-**若你信任本仓库发布包：** 在蓝色提示窗口中点击 **「更多信息」**，再点击 **「仍要运行」** 即可。若从 zip 解压，也可右键 **`ClipboardManager.exe`** → **属性** → 勾选 **「解除锁定」** 后确定，再启动。
+**若你信任本仓库发布包：** 在蓝色提示窗口中点击 **「更多信息」**，再点击 **「仍要运行」** 即可。若从 zip 解压，也可右键 **`ClipboardX.exe`** → **属性** → 勾选 **「解除锁定」** 后确定，再启动。
 
 分发版若未使用 **受信任 CA 的代码签名证书** 签名，无法从根上消除该提示；个人或小范围使用按上法操作即可。若希望对公网用户减少拦截，需在发布流程中对 exe 使用 **Authenticode 签名**（商用证书），新证书仍需时间积累信誉。
 
@@ -28,7 +28,7 @@
 - **快捷操作** — ↑↓ 导航、Enter 粘贴、Esc 关闭/清除搜索、Backspace 删搜索字符
 - **智能定位** — 弹窗出现在文本光标或鼠标附近（可配置）
 - **自动去重** — 重复内容自动提升到顶部
-- **配置持久化** — 最大记录数、主题、透明度等写入 `%AppData%\ClipboardManager`
+- **配置持久化** — 最大记录数、主题、透明度等写入 `%AppData%\ClipboardX`（从旧名 **ClipboardManager** 升级时会自动迁移 `settings.json`）
 - **主题** — 支持跟随系统 / 亮色 / 暗色（Catppuccin Mocha）
 
 ## 从源码运行
@@ -39,7 +39,7 @@
 dotnet run
 ```
 
-调试构建会附带控制台窗口，便于查看日志；正式发布使用 Release 配置。
+调试构建会附带控制台窗口，便于查看日志；正式发布使用 Release 配置。工程文件仍为 `ClipboardManager.csproj`，输出二进制为 **ClipboardX**。
 
 ## 自行编译发布
 

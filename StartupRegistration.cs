@@ -9,7 +9,8 @@ namespace ClipboardManager;
 public static class StartupRegistration
 {
     private const string RunSubKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "ClipboardManager";
+    private const string LegacyValueName = "ClipboardManager";
+    private const string ValueName = "ClipboardX";
 
     /// <summary>
     /// 解析要写入 Run 键的可执行路径；<c>dotnet run</c> 等场景返回 null，避免误注册 dotnet.exe。
@@ -40,11 +41,13 @@ public static class StartupRegistration
             {
                 var exePath = ResolveExecutablePathForStartup();
                 if (string.IsNullOrEmpty(exePath)) return;
+                key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
                 key.SetValue(ValueName, $"\"{exePath}\"");
             }
             else
             {
                 key.DeleteValue(ValueName, throwOnMissingValue: false);
+                key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
             }
         }
         catch

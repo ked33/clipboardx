@@ -1020,7 +1020,7 @@ public partial class PopupWindow : Window
     {
         try
         {
-            var dir = Path.Combine(Path.GetTempPath(), "ClipboardManager");
+            var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
             if (!Directory.Exists(dir)) return;
             var threshold = DateTime.UtcNow.AddHours(-24);
             foreach (var f in Directory.GetFiles(dir, "clip_*.png"))
@@ -1102,7 +1102,7 @@ public partial class PopupWindow : Window
             if (idx > 0) { _allItems.RemoveAt(idx); _allItems.Insert(0, item); }
         }
 
-        var dir = Path.Combine(Path.GetTempPath(), "ClipboardManager");
+        var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
         try
         {
             Directory.CreateDirectory(dir);

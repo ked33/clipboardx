@@ -7,6 +7,7 @@ namespace ClipboardManager;
 
 /// <summary>
 /// 由用户提供的 Iconfont 剪贴板 SVG（viewBox 0 0 1024 1024）光栅化为托盘/窗口图标。
+/// 若改路径或配色，请同步更新 <c>tools/GenAppIcon</c> 并重新生成 <c>assets/clipboard.ico</c>（供 exe / 快捷方式嵌入图标）。
 /// </summary>
 internal static class TrayIconSvg
 {

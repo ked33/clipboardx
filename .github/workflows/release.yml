@@ -51,10 +51,10 @@ jobs:
       - name: Check exe sizes (no-runtime 应远小于 self-contained)
         shell: pwsh
         run: |
-          $fdd = (Get-Item publish/fdd/ClipboardManager.exe).Length
-          $sc = (Get-Item publish/sc/ClipboardManager.exe).Length
-          Write-Host "no-runtime ClipboardManager.exe: $fdd bytes (~$([math]::Round($fdd/1MB, 2)) MB)"
-          Write-Host "self-contained ClipboardManager.exe: $sc bytes (~$([math]::Round($sc/1MB, 2)) MB)"
+          $fdd = (Get-Item publish/fdd/ClipboardX.exe).Length
+          $sc = (Get-Item publish/sc/ClipboardX.exe).Length
+          Write-Host "no-runtime ClipboardX.exe: $fdd bytes (~$([math]::Round($fdd/1MB, 2)) MB)"
+          Write-Host "self-contained ClipboardX.exe: $sc bytes (~$([math]::Round($sc/1MB, 2)) MB)"
           if ($fdd -ge $sc) {
             throw "no-runtime exe should be smaller than self-contained (SelfContained flag likely wrong)."
           }
@@ -66,15 +66,15 @@ jobs:
         shell: pwsh
         run: |
           $v = '${{ steps.ver.outputs.version }}'
-          Compress-Archive -Path 'publish/fdd/*' -DestinationPath "ClipboardManager-$v-win-x64-no-runtime.zip" -Force
-          Compress-Archive -Path 'publish/sc/*' -DestinationPath "ClipboardManager-$v-win-x64-self-contained.zip" -Force
+          Compress-Archive -Path 'publish/fdd/*' -DestinationPath "ClipboardX-$v-win-x64-no-runtime.zip" -Force
+          Compress-Archive -Path 'publish/sc/*' -DestinationPath "ClipboardX-$v-win-x64-self-contained.zip" -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            ClipboardManager-${{ steps.ver.outputs.version }}-win-x64-no-runtime.zip
-            ClipboardManager-${{ steps.ver.outputs.version }}-win-x64-self-contained.zip
+            ClipboardX-${{ steps.ver.outputs.version }}-win-x64-no-runtime.zip
+            ClipboardX-${{ steps.ver.outputs.version }}-win-x64-self-contained.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
