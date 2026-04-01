@@ -25,25 +25,42 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
+      # 勿对 FDD 使用 EnableCompressionInSingleFile（NETSDK1176：仅独立应用支持捆绑内压缩）。
+      # 在默认 shell pwsh 下请用 -p:SelfContained=...，避免 --self-contained false 被误解析导致两种包一样大。
       - name: Publish — 不含运行时（需本机安装 .NET 8）
         run: >
-          dotnet publish ClipboardManager.csproj -c Release -r win-x64 --self-contained false
+          dotnet publish ClipboardManager.csproj -c Release -r win-x64
+          -p:SelfContained=false
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
           -p:DebugType=None
           -p:Version=${{ steps.ver.outputs.version }}
           -o publish/fdd
 
       - name: Publish — 自带运行时（单文件）
         run: >
-          dotnet publish ClipboardManager.csproj -c Release -r win-x64 --self-contained true
+          dotnet publish ClipboardManager.csproj -c Release -r win-x64
+          -p:SelfContained=true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:EnableCompressionInSingleFile=true
           -p:DebugType=None
           -p:Version=${{ steps.ver.outputs.version }}
           -o publish/sc
+
+      - name: Check exe sizes (no-runtime 应远小于 self-contained)
+        shell: pwsh
+        run: |
+          $fdd = (Get-Item publish/fdd/ClipboardManager.exe).Length
+          $sc = (Get-Item publish/sc/ClipboardManager.exe).Length
+          Write-Host "no-runtime ClipboardManager.exe: $fdd bytes (~$([math]::Round($fdd/1MB, 2)) MB)"
+          Write-Host "self-contained ClipboardManager.exe: $sc bytes (~$([math]::Round($sc/1MB, 2)) MB)"
+          if ($fdd -ge $sc) {
+            throw "no-runtime exe should be smaller than self-contained (SelfContained flag likely wrong)."
+          }
+          if ($sc -lt $fdd * 4) {
+            throw "self-contained exe unexpectedly close in size to no-runtime; publish may be misconfigured."
+          }
 
       - name: Zip artifacts
         shell: pwsh
