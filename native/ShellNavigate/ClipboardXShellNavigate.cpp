@@ -105,7 +105,6 @@ static HRESULT NavigateViaShellBrowser(HWND hDlg, PCWSTR pathW)
 
     IShellBrowser* pSB = nullptr;
     HRESULT hr = pUnk->QueryInterface(IID_IShellBrowser, reinterpret_cast<void**>(&pSB));
-    pUnk->Release();
     if (FAILED(hr) || !pSB)
     {
         NavLogFmtW(L"QueryInterface IShellBrowser hr=0x%08X", (unsigned)hr);

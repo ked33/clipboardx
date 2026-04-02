@@ -115,16 +115,32 @@ internal static class FileDialogJumpHelper
     {
         if (!TryGetExeBaseNameLower(hwnd, out var exe) || !IsWpsSuiteExe(exe))
             return false;
+
+        var className = Win32.GetWindowClassName(hwnd);
+
+        // #32770 也归入 WpsCustom（后备方法更丰富），注入由 TryNavigateToFolder 按类名单独处理
+        if (className.Equals("#32770", StringComparison.Ordinal))
+            return true;
+
         var title = Win32.GetWindowText(hwnd);
         if (IsWpsFileDialogTitle(title))
             return true;
-        // 新版常见 Qt 顶层窗：标题仅有「打开/另存/保存」等简短词时，上文完整短语未命中
-        if (IsWpsQtLikeWindowClass(Win32.GetWindowClassName(hwnd))
-            && !string.IsNullOrEmpty(title)
+
+        if (!IsWpsQtLikeWindowClass(className))
+            return false;
+
+        if (!string.IsNullOrEmpty(title)
             && (title.Contains("打开", StringComparison.Ordinal)
                 || title.Contains("另存", StringComparison.Ordinal)
                 || title.Contains("保存", StringComparison.Ordinal)))
             return true;
+
+        // WPS Qt5 自绘对话框：GetWindowText 为空且 UIA 不可用。
+        // WPS 主窗口/首页的 Win32 标题不为空（任务栏需要显示），
+        // 只有弹出的文件对话框才是空标题 Qt 窗口。
+        if (string.IsNullOrEmpty(title))
+            return true;
+
         return false;
     }
 
@@ -521,8 +537,9 @@ internal static class FileDialogJumpHelper
         var path = NormalizeFolderPathForNavigation(folderPath);
         if (!Directory.Exists(path)) return false;
 
+        // #32770 是标准 Shell 对话框，始终支持注入（包括 WPS 进程内弹出的浏览对话框）
         if (allowShellInject
-            && kind != FileDialogKind.WpsCustom
+            && Win32.GetWindowClassName(dialogHwnd).Equals("#32770", StringComparison.Ordinal)
             && ShellDialogDeepNavigate.TryBrowseObjectInject(dialogHwnd, path))
             return true;
 
@@ -535,6 +552,7 @@ internal static class FileDialogJumpHelper
 
     /// <summary>
     /// WPS：无 IShellBrowser；含 ComboBoxEx/Edit、ReBar+F4 地址栏（与逍遥 QuickJump ChangePath 同类）、UIA、Alt+D、Ctrl+L。
+    /// Qt5 窗口无 Win32 子控件，通过文件名输入框键入路径跳转。
     /// </summary>
     private static bool TryNavigateWpsCustom(IntPtr dialogHwnd, string folderPath)
     {
@@ -542,13 +560,15 @@ internal static class FileDialogJumpHelper
         var norm = Path.GetFullPath(folderPath);
         var folderWithSlash = norm.TrimEnd('\\', '/') + "\\";
 
-        uint dialogPid;
-        var dialogTid = Win32.GetWindowThreadProcessId(dialogHwnd, out dialogPid);
-        var curTid = Win32.GetCurrentThreadId();
-        Win32.AttachThreadInput(curTid, dialogTid, true);
-        try { Win32.SetForegroundWindow(dialogHwnd); }
-        finally { Win32.AttachThreadInput(curTid, dialogTid, false); }
+        // 提前判断 Qt5：无 Win32 子控件时跳过所有 Win32/UIA 遍历（耗时会导致焦点丢失）
+        if (!HasAnyWin32ChildWindow(dialogHwnd))
+        {
+            ShellNavigateLog.Write("wps",
+                $"Qt5 dialog detected; class={Win32.GetWindowClassName(dialogHwnd)}");
+            return TryNavigateQtFileDialog(dialogHwnd, folderWithSlash);
+        }
 
+        ActivateDialog(dialogHwnd);
         Thread.Sleep(100);
 
         if (TryWpsSetPathViaValuePattern(dialogHwnd, norm))
@@ -592,6 +612,39 @@ internal static class FileDialogJumpHelper
         Thread.Sleep(50);
         SendEnter();
         Thread.Sleep(120);
+        return true;
+    }
+
+    private static void ActivateDialog(IntPtr dialogHwnd)
+    {
+        var dialogTid = Win32.GetWindowThreadProcessId(dialogHwnd, out _);
+        var curTid = Win32.GetCurrentThreadId();
+        Win32.AttachThreadInput(curTid, dialogTid, true);
+        try { Win32.SetForegroundWindow(dialogHwnd); }
+        finally { Win32.AttachThreadInput(curTid, dialogTid, false); }
+    }
+
+    private static bool HasAnyWin32ChildWindow(IntPtr hwnd)
+    {
+        var found = false;
+        Win32.EnumChildWindows(hwnd, (_, _) => { found = true; return false; }, IntPtr.Zero);
+        return found;
+    }
+
+    /// <summary>
+    /// WPS Qt5 文件对话框跳转：先确保前台焦点，然后依次尝试 Alt+N / 直接输入。
+    /// </summary>
+    private static bool TryNavigateQtFileDialog(IntPtr dialogHwnd, string folderWithSlash)
+    {
+        ActivateDialog(dialogHwnd);
+        Thread.Sleep(50);
+        SendAltN();
+        Thread.Sleep(30);
+        SendCtrlA();
+        Thread.Sleep(10);
+        SendUnicodeString(folderWithSlash);
+        Thread.Sleep(10);
+        SendEnter();
         return true;
     }
 
@@ -960,6 +1013,19 @@ internal static class FileDialogJumpHelper
         }
         catch { }
         return false;
+    }
+
+    /// <summary>Alt+N 聚焦 WPS Qt 对话框"文件名称(N)"输入框。</summary>
+    private static void SendAltN()
+    {
+        const ushort vkMenu = 0x12;
+        const ushort vkN = 0x4E;
+        var inputs = new Win32.INPUT[4];
+        inputs[0].type = Win32.INPUT_KEYBOARD; inputs[0].u.ki.wVk = vkMenu;
+        inputs[1].type = Win32.INPUT_KEYBOARD; inputs[1].u.ki.wVk = vkN;
+        inputs[2].type = Win32.INPUT_KEYBOARD; inputs[2].u.ki.wVk = vkN; inputs[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        inputs[3].type = Win32.INPUT_KEYBOARD; inputs[3].u.ki.wVk = vkMenu; inputs[3].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        Win32.SendInput(4, inputs, Marshal.SizeOf<Win32.INPUT>());
     }
 
     /// <summary>与资源管理器一致：Alt+D 聚焦地址栏（部分宿主自带的打开对话框也支持）。</summary>

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -141,6 +142,7 @@ public partial class App : Application
             Dispatcher.Invoke(ShowAboutDialog));
         menu.Items.Add("检查更新…", null, (_, _) =>
             _ = CheckForUpdatesAsync());
+        menu.Items.Add("采集窗口信息", null, (_, _) => StartWindowInspection());
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("卸载…", null, (_, _) =>
             Dispatcher.Invoke(PerUserInstall.PromptUninstallFromTray));
@@ -316,6 +318,136 @@ public partial class App : Application
             _settings.Save();
             UpdateTrayTooltip();
         }
+    }
+
+    private async void StartWindowInspection()
+    {
+        _trayIcon?.ShowBalloonTip(2500, "ClipboardX",
+            "3 秒后采集前台窗口信息，请切换到目标窗口…", WinForms.ToolTipIcon.Info);
+        await Task.Delay(3000);
+
+        var hwnd = Win32.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+        {
+            Dispatcher.Invoke(() =>
+                System.Windows.MessageBox.Show("未获取到前台窗口。", "采集窗口",
+                    MessageBoxButton.OK, MessageBoxImage.Warning));
+            return;
+        }
+
+        var info = CollectWindowInfo(hwnd);
+
+        Dispatcher.Invoke(() =>
+        {
+            try { System.Windows.Clipboard.SetText(info); } catch { }
+            System.Windows.MessageBox.Show(
+                info + "\n（已复制到剪贴板）",
+                "ClipboardX 窗口信息采集",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        });
+    }
+
+    private static string CollectWindowInfo(IntPtr hwnd)
+    {
+        var className = Win32.GetWindowClassName(hwnd);
+        var title = Win32.GetWindowText(hwnd);
+        Win32.GetWindowThreadProcessId(hwnd, out var pid);
+
+        var exeName = "(unknown)";
+        var exeFullPath = "";
+        if (pid != 0)
+        {
+            var hProc = Win32.OpenProcess(Win32.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (hProc != IntPtr.Zero)
+            {
+                try
+                {
+                    var sb = new StringBuilder(1024);
+                    if (Win32.GetModuleFileNameEx(hProc, IntPtr.Zero, sb, sb.Capacity) > 0)
+                    {
+                        exeFullPath = sb.ToString();
+                        exeName = Path.GetFileNameWithoutExtension(exeFullPath).ToLowerInvariant();
+                    }
+                }
+                finally { Win32.CloseHandle(hProc); }
+            }
+        }
+
+        var uiaName = "";
+        try
+        {
+            var el = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            uiaName = el?.Current.Name ?? "";
+        }
+        catch { /* ignore */ }
+
+        var kind = FileDialogJumpHelper.ClassifyFileDialog(hwnd);
+
+        var childClasses = new List<string>();
+        Win32.EnumChildWindows(hwnd, (ch, _) =>
+        {
+            if (childClasses.Count < 60)
+                childClasses.Add(Win32.GetWindowClassName(ch));
+            return true;
+        }, IntPtr.Zero);
+
+        var output = new StringBuilder();
+        output.AppendLine("=== ClipboardX 窗口信息采集 ===");
+        output.AppendLine($"句柄:     0x{hwnd.ToInt64():X}");
+        output.AppendLine($"类名:     {className}");
+        output.AppendLine($"标题:     {title}");
+        output.AppendLine($"进程名:   {exeName}");
+        output.AppendLine($"进程PID:  {pid}");
+        output.AppendLine($"进程路径: {exeFullPath}");
+        if (!string.IsNullOrEmpty(uiaName) && uiaName != title)
+            output.AppendLine($"UIA名称: {uiaName}");
+        output.AppendLine($"对话框识别: {kind}");
+        output.AppendLine();
+
+        if (childClasses.Count > 0)
+        {
+            var grouped = childClasses.GroupBy(c => c).OrderByDescending(g => g.Count());
+            output.AppendLine($"子窗口 ({childClasses.Count} 个):");
+            foreach (var g in grouped)
+                output.AppendLine(g.Count() > 1 ? $"  - {g.Key} (×{g.Count()})" : $"  - {g.Key}");
+        }
+        else
+        {
+            output.AppendLine("子窗口: (无)");
+        }
+
+        // Qt 等无子窗口时，浅层输出 UIA 子树帮助排查
+        if (childClasses.Count == 0 || className.Contains("Qt", StringComparison.Ordinal))
+        {
+            try
+            {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+                if (root != null)
+                {
+                    output.AppendLine();
+                    output.AppendLine("UIA 子节点:");
+                    var uiaChildren = root.FindAll(
+                        System.Windows.Automation.TreeScope.Children,
+                        System.Windows.Automation.Condition.TrueCondition);
+                    foreach (System.Windows.Automation.AutomationElement child in uiaChildren)
+                    {
+                        try
+                        {
+                            var ct = child.Current.ControlType.ProgrammaticName.Replace("ControlType.", "");
+                            var cn = child.Current.Name ?? "";
+                            output.AppendLine($"  [{ct}] Name=\"{cn}\"");
+                        }
+                        catch { /* ignore */ }
+                    }
+                    if (uiaChildren.Count == 0)
+                        output.AppendLine("  (无)");
+                }
+            }
+            catch { /* ignore */ }
+        }
+
+        return output.ToString();
     }
 
     /// <summary>与托盘相同图稿，用于 WPF 窗口标题栏。</summary>
