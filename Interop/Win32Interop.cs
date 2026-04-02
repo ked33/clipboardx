@@ -45,6 +45,16 @@ internal static class Win32
     public const uint VK_ESCAPE = 0x1B;
     public const uint VK_DELETE = 0x2E;
     public const uint VK_OEM_3 = 0xC0;
+    public const ushort VK_SHIFT = 0x10;
+    public const ushort VK_MENU = 0x12;
+    public const ushort VK_LWIN = 0x5B;
+    public const ushort VK_RWIN = 0x5C;
+    public const ushort VK_LSHIFT = 0xA0;
+    public const ushort VK_RSHIFT = 0xA1;
+    public const ushort VK_LCONTROL = 0xA2;
+    public const ushort VK_RCONTROL = 0xA3;
+    public const ushort VK_LMENU = 0xA4;
+    public const ushort VK_RMENU = 0xA5;
 
     [DllImport("user32.dll")]
     public static extern bool IsWindow(IntPtr hWnd);
@@ -65,6 +75,33 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool CloseClipboard();
+
+    /// <summary>
+    /// 在写入 WPF Clipboard 之前：若抢占成功则 EmptyClipboard，常能更快结束上一进程的延迟渲染/OLE 占用。
+    /// 失败（另一线程仍 Open 着）时返回 false，由上层照常重试 Set*。
+    /// </summary>
+    public static bool TryEmptyClipboardAfterOpen(IntPtr hwndOwner)
+    {
+        if (hwndOwner == IntPtr.Zero) return false;
+        if (!OpenClipboard(hwndOwner)) return false;
+        try
+        {
+            return EmptyClipboard();
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -73,6 +110,43 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    /// <summary>
+    /// 粘贴后大段文本/OLE 常让目标长时间握住剪贴板；仅靠 SetForegroundWindow 有时抢不回前台，
+    /// 导致 OpenClipboard 反复 CANT_OPEN。对前台线程短暂 AttachThreadInput 可提高夺权成功率。
+    /// </summary>
+    public static void SetForegroundWindowAggressive(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero || !IsWindow(hWnd)) return;
+        if (GetForegroundWindow() == hWnd) return;
+        var fg = GetForegroundWindow();
+        var fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out _) : 0u;
+        var targetThread = GetWindowThreadProcessId(hWnd, out _);
+        var curThread = GetCurrentThreadId();
+        var attachedFg = false;
+        var attachedTarget = false;
+        try
+        {
+            if (fgThread != 0 && fgThread != curThread)
+            {
+                AttachThreadInput(curThread, fgThread, true);
+                attachedFg = true;
+            }
+            if (targetThread != 0 && targetThread != curThread && targetThread != fgThread)
+            {
+                AttachThreadInput(curThread, targetThread, true);
+                attachedTarget = true;
+            }
+            SetForegroundWindow(hWnd);
+        }
+        finally
+        {
+            if (attachedTarget)
+                AttachThreadInput(curThread, targetThread, false);
+            if (attachedFg)
+                AttachThreadInput(curThread, fgThread, false);
+        }
+    }
 
     [DllImport("user32.dll")]
     public static extern bool GetCaretPos(out POINT lpPoint);

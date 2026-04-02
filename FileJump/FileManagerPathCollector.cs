@@ -11,7 +11,7 @@ namespace ClipboardManager;
 /// <summary>
 /// 枚举资源管理器 / Total Commander / XYplorer / Directory Opus 等窗口的路径；
 /// 思路对齐 QuickSwitch（<see href="https://github.com/gepruts/QuickSwitch"/>）的 ShowMenu / Get_Zfolder。
-/// 另对 FreeCommander / Double Commander / OneCommander / Multi Commander / Tablacus / xplorer² 等无公开消息 API 的窗口，
+/// 另对 FreeCommander / Double Commander / Q-Dir / OneCommander / Multi Commander / Tablacus / xplorer² 等无公开消息 API 的窗口，
 /// 在进程白名单内通过有限的 UI Automation 扫描提取可验证的本地目录路径（与社区脚本常见做法一致，弱于专用协议）。
 /// </summary>
 internal static class FileManagerPathCollector
@@ -20,6 +20,19 @@ internal static class FileManagerPathCollector
     private const int TcmCopySrcPathToClip = 2029;
     private const int TcmCopyTrgPathToClip = 2030;
     private const nint XyCopyDataId = 0x400001;
+
+    /// <summary>其它白名单管理器：单路径、控节点数以降低 UIA 开销。</summary>
+    private const int AlternateUiMaxNodesSingle = 400;
+
+    /// <summary>Q-Dir 四格：多路径；采满即停。</summary>
+    private const int QDirMaxDistinctPaths = 6;
+
+    /// <summary>Q-Dir 仅在 Edit/Combo 快速通道后仍不足时再走的浅层 BFS 上限。</summary>
+    private const int QDirFallbackMaxNodes = 160;
+
+    private static readonly Condition s_editOrComboCondition = new OrCondition(
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox));
 
     /// <summary>对 THESE 进程在类名未识别时走 UIA 弱匹配（exe 主名无扩展、不区分大小写）。</summary>
     private static readonly HashSet<string> AlternateUiPathProcesses = new(StringComparer.OrdinalIgnoreCase)
@@ -66,6 +79,7 @@ internal static class FileManagerPathCollector
     /// <summary>按 Z 序遍历顶层窗口，收集各文件管理器当前路径；末尾可附加「记忆路径」。</summary>
     public static List<FileJumpCandidate> CollectCandidates(IntPtr dialogHwnd, string? memoryFolder, int zDelta = 2)
     {
+        var exeByPid = new Dictionary<uint, string>();
         var list = new List<FileJumpCandidate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -114,8 +128,19 @@ internal static class FileManagerPathCollector
                         Add("资源管理器", ex);
                     break;
                 default:
-                    if (TryGetFolderForAlternateUiManager(h) is { } alt)
-                        Add(AlternateManagerCandidateLabel(h), alt);
+                    if (!TryGetProcessImagePath(h, exeByPid, out var altExe)) break;
+                    {
+                        var altProc = Path.GetFileNameWithoutExtension(altExe);
+                        if (!ShouldUseAlternateUiAutomation(altProc)) break;
+                        var altLabel = AlternateManagerDisplayLabel(altProc, altExe);
+                        if (altProc.StartsWith("q-dir", StringComparison.OrdinalIgnoreCase))
+                        {
+                            foreach (var p in CollectQDirFolderPathsFromAutomation(h))
+                                Add(altLabel, p);
+                        }
+                        else if (TryFindBestFolderPathInAutomationTree(h, out var alt))
+                            Add(altLabel, alt);
+                    }
                     break;
             }
         }
@@ -143,6 +168,8 @@ internal static class FileManagerPathCollector
         if (AlternateUiPathProcesses.Contains(procBaseName)) return true;
         // Microsoft Store「文件」等可能为 Files、Files!App 等变体
         if (procBaseName.StartsWith("files", StringComparison.OrdinalIgnoreCase)) return true;
+        // Q-Dir.exe、Q-Dir_x64 等（SoftwareOK）
+        if (procBaseName.StartsWith("q-dir", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
@@ -155,11 +182,10 @@ internal static class FileManagerPathCollector
         return TryFindBestFolderPathInAutomationTree(h, out var path) ? path : null;
     }
 
-    private static string AlternateManagerCandidateLabel(IntPtr h)
+    private static string AlternateManagerDisplayLabel(string procFileBaseName, string exeFullPath)
     {
-        if (!TryGetProcessImagePath(h, out var exe))
-            return "文件管理器(UIA)";
-        return Path.GetFileNameWithoutExtension(exe).ToLowerInvariant() switch
+        var pl = procFileBaseName.ToLowerInvariant();
+        return pl switch
         {
             "freecommander" => "FreeCommander",
             "doublecmd" => "Double Commander",
@@ -172,13 +198,15 @@ internal static class FileManagerPathCollector
             "winnc" => "WinNc",
             "fman" => "fman",
             var x when x.StartsWith("files", StringComparison.OrdinalIgnoreCase) => "Files",
-            _ => Path.GetFileNameWithoutExtension(exe),
+            var x when x.StartsWith("q-dir", StringComparison.OrdinalIgnoreCase) => "Q-Dir",
+            _ => Path.GetFileNameWithoutExtension(exeFullPath),
         };
     }
 
     private static bool TryFindBestFolderPathInAutomationTree(IntPtr hwnd, out string best)
     {
         best = "";
+        var acc = "";
         try
         {
             var root = AutomationElement.FromHandle(hwnd);
@@ -186,7 +214,7 @@ internal static class FileManagerPathCollector
 
             var q = new Queue<AutomationElement>();
             q.Enqueue(root);
-            for (var seen = 0; q.Count > 0 && seen < 360; seen++)
+            for (var seen = 0; q.Count > 0 && seen < AlternateUiMaxNodesSingle; seen++)
             {
                 var el = q.Dequeue();
                 try
@@ -196,27 +224,7 @@ internal static class FileManagerPathCollector
                 }
                 catch { /* ignore */ }
 
-                try
-                {
-                    if (el.TryGetCurrentPattern(ValuePattern.Pattern, out var vpObj))
-                    {
-                        var v = ((ValuePattern)vpObj).Current.Value;
-                        TryTakeLongerExistingDir(v, ref best);
-                    }
-                }
-                catch { /* ignore */ }
-
-                try
-                {
-                    TryTakeLongerExistingDir(el.Current.Name, ref best);
-                }
-                catch { /* ignore */ }
-
-                try
-                {
-                    TryTakeLongerExistingDir(el.Current.HelpText, ref best);
-                }
-                catch { /* ignore */ }
+                ForEachUiStringOnElement(el, includeAutomationId: false, s => TryTakeLongerExistingDir(s, ref acc));
             }
         }
         catch
@@ -224,14 +232,146 @@ internal static class FileManagerPathCollector
             return false;
         }
 
-        return best.Length > 0;
+        best = acc;
+        return acc.Length > 0;
+    }
+
+    /// <summary>Q-Dir 多窗格：优先扫地址栏 Edit/Combo（UIA 原生枚举，避免整窗逐子结点 BFS）；不足再浅层补扫。</summary>
+    private static List<string> CollectQDirFolderPathsFromAutomation(IntPtr hwnd)
+    {
+        var sink = new List<string>(6);
+        var pathSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var root = AutomationElement.FromHandle(hwnd);
+            if (root == null) return sink;
+
+            AutomationElementCollection? edits = null;
+            try
+            {
+                edits = root.FindAll(TreeScope.Descendants, s_editOrComboCondition);
+            }
+            catch { /* ignore */ }
+
+            if (edits != null)
+            {
+                foreach (AutomationElement el in edits)
+                {
+                    ForEachUiStringOnElement(el, includeAutomationId: false, s =>
+                    {
+                        AddDistinctFolderPathsFromText(s, pathSeen, sink);
+                    });
+                    if (sink.Count >= QDirMaxDistinctPaths) return sink;
+                }
+            }
+
+            if (sink.Count >= 3) return sink;
+
+            QDirFallbackShallowBfs(root, pathSeen, sink);
+        }
+        catch { /* ignore */ }
+
+        return sink;
+    }
+
+    private static void QDirFallbackShallowBfs(AutomationElement root, HashSet<string> pathSeen, List<string> sink)
+    {
+        var q = new Queue<AutomationElement>();
+        q.Enqueue(root);
+        for (var seen = 0; q.Count > 0 && seen < QDirFallbackMaxNodes && sink.Count < QDirMaxDistinctPaths; seen++)
+        {
+            var el = q.Dequeue();
+            try
+            {
+                foreach (AutomationElement c in el.FindAll(TreeScope.Children, Condition.TrueCondition))
+                    q.Enqueue(c);
+            }
+            catch { /* ignore */ }
+
+            ForEachUiStringOnElement(el, includeAutomationId: false, s =>
+                AddDistinctFolderPathsFromText(s, pathSeen, sink));
+        }
+    }
+
+    private static void ForEachUiStringOnElement(AutomationElement el, bool includeAutomationId, Action<string?> onText)
+    {
+        try
+        {
+            if (el.TryGetCurrentPattern(ValuePattern.Pattern, out var vpObj))
+                onText(((ValuePattern)vpObj).Current.Value);
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            if (el.TryGetCurrentPattern(TextPattern.Pattern, out var tpObj))
+                onText(((TextPattern)tpObj).DocumentRange.GetText(-1));
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            onText(el.Current.Name);
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            onText(el.Current.HelpText);
+        }
+        catch { /* ignore */ }
+
+        if (!includeAutomationId) return;
+
+        try
+        {
+            onText(el.Current.AutomationId);
+        }
+        catch { /* ignore */ }
+    }
+
+    private static void AddDistinctFolderPathsFromText(string? text, HashSet<string> pathSeen, List<string> sink)
+    {
+        if (string.IsNullOrEmpty(text) || sink.Count >= QDirMaxDistinctPaths) return;
+        void TryAdd(string? normRaw)
+        {
+            if (string.IsNullOrEmpty(normRaw) || sink.Count >= QDirMaxDistinctPaths) return;
+            string norm;
+            try
+            {
+                norm = Path.GetFullPath(normRaw.TrimEnd('\\', '/'));
+            }
+            catch
+            {
+                return;
+            }
+            if (!Directory.Exists(norm)) return;
+            if (!pathSeen.Add(norm)) return;
+            sink.Add(norm);
+        }
+
+        if (FileDialogJumpHelper.TryNormalizeToExistingDirectory(text, out var n1))
+            TryAdd(n1);
+        if (sink.Count >= QDirMaxDistinctPaths) return;
+        if (HasBreadcrumbArrow(text)
+            && FileDialogJumpHelper.TryWpsBreadcrumbTextToFolder(text, out var n2))
+            TryAdd(n2);
+    }
+
+    private static bool HasBreadcrumbArrow(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        return text.Contains('>') || text.Contains('＞') || text.Contains('›');
     }
 
     private static void TryTakeLongerExistingDir(string? text, ref string best)
     {
         if (string.IsNullOrEmpty(text)) return;
-        if (!FileDialogJumpHelper.TryNormalizeToExistingDirectory(text, out var norm)) return;
-        if (norm.Length > best.Length) best = norm;
+        if (FileDialogJumpHelper.TryNormalizeToExistingDirectory(text, out var norm) && norm.Length > best.Length)
+            best = norm;
+        if (!HasBreadcrumbArrow(text)) return;
+        if (FileDialogJumpHelper.TryWpsBreadcrumbTextToFolder(text, out var crumb) && crumb.Length > best.Length)
+            best = crumb;
     }
 
     private static bool TryTotalCommanderPathFromClip(IntPtr tcHwnd, int commandId, out string path)
@@ -519,16 +659,34 @@ internal static class FileManagerPathCollector
     }
 
     private static bool TryGetProcessImagePath(IntPtr hwnd, out string path)
+        => TryGetProcessImagePath(hwnd, null, out path);
+
+    /// <summary>单次 <see cref="CollectCandidates"/> 内复用 PID→exe，避免对大量顶层窗口重复 OpenProcess。</summary>
+    private static bool TryGetProcessImagePath(IntPtr hwnd, Dictionary<uint, string>? exeByPid, out string path)
     {
         path = "";
         Win32.GetWindowThreadProcessId(hwnd, out var pid);
+        if (exeByPid != null && exeByPid.TryGetValue(pid, out var cached))
+        {
+            path = cached;
+            return !string.IsNullOrEmpty(path);
+        }
+
         var hProc = Win32.OpenProcess(Win32.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-        if (hProc == IntPtr.Zero) return false;
+        if (hProc == IntPtr.Zero)
+        {
+            exeByPid?.TryAdd(pid, "");
+            return false;
+        }
+
         try
         {
             var sb = new StringBuilder(1024);
-            return Win32.GetModuleFileNameEx(hProc, IntPtr.Zero, sb, sb.Capacity) > 0
-                   && File.Exists(path = sb.ToString());
+            var ok = Win32.GetModuleFileNameEx(hProc, IntPtr.Zero, sb, sb.Capacity) > 0
+                     && File.Exists(path = sb.ToString());
+            if (!ok) path = "";
+            if (exeByPid != null) exeByPid[pid] = path;
+            return ok;
         }
         finally
         {

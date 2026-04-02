@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Media.Imaging;
 
@@ -13,6 +14,26 @@ public class ClipboardEntry : INotifyPropertyChanged
     public string? TextContent { get; set; }
     public byte[]? ImageData { get; set; }
     public string[]? FilePaths { get; set; }
+
+    private string? _imageMd5Hex;
+    /// <summary>PNG 图像字节的 MD5（小写十六进制），惰性计算；用于历史项去重。</summary>
+    public string? ImageContentMd5Hex
+    {
+        get
+        {
+            if (Type != EntryType.Image || ImageData is not { Length: > 0 }) return null;
+            if (_imageMd5Hex != null) return _imageMd5Hex;
+            _imageMd5Hex = ComputeImageBytesMd5Hex(ImageData);
+            return _imageMd5Hex;
+        }
+    }
+
+    public static string ComputeImageBytesMd5Hex(byte[] data)
+    {
+        if (data == null || data.Length == 0) return "";
+        using var md5 = MD5.Create();
+        return Convert.ToHexString(md5.ComputeHash(data)).ToLowerInvariant();
+    }
     public DateTime CopiedAt { get; set; } = DateTime.Now;
     public int ImageWidth { get; set; }
     public int ImageHeight { get; set; }

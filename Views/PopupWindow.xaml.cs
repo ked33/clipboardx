@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -54,6 +56,8 @@ public partial class PopupWindow : Window
     private static PopupWindow? s_popupWinEventOwner;
 
     private bool _isSettingClipboard;
+    /// <summary>从历史粘贴整段流程中：禁止监控线程读剪贴板，避免 Contains/Get 与即将执行的 Set 在同 UI 线程上交错 OpenClipboard。</summary>
+    private bool _pasteInProgress;
     private bool _isPopupVisible;
     private string _searchText = "";
     private EntryType? _typeFilter;
@@ -99,6 +103,10 @@ public partial class PopupWindow : Window
     private DispatcherTimer? _fileJumpOpenDelayTimer;
     private DispatcherTimer? _fileJumpAutoOpenDebounceTimer;
     private int _fileJumpDelaySession;
+    /// <summary>「对话框到前台自动执行」路径采集异步化，避免与 UI 线程争抢；递增后过时结果丢弃。</summary>
+    private int _fileJumpAutoForegroundCollectGen;
+    /// <summary>手动跳转热键路径采集异步化；连按热键时仅最后一次结果生效（极端情况下或影响「双按直跳」窗口期）。</summary>
+    private int _fileJumpHotkeyCollectGen;
     private uint _fileJumpHotkeyModifiers;
     private uint _fileJumpHotkeyKey;
 
@@ -446,19 +454,80 @@ public partial class PopupWindow : Window
 
     #region Clipboard Monitoring
 
+    private const int ClipbrdECantOpenHResult = unchecked((int)0x800401D0);
+
+    private static bool IsClipboardCantOpen(Exception ex) =>
+        ex is COMException com && com.HResult == ClipbrdECantOpenHResult;
+
+    /// <summary>
+    /// 读剪贴板时其它进程常短时占用 → CLIPBRD_E_CANT_OPEN；与 TrySetClipboard 类似做短暂重试，避免 monitor outer catch 误判整次更新失败。
+    /// </summary>
+    private static bool TryReadClipboardBool(Func<bool> read, string tag, int maxRetries = 2, int delayMs = 18)
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            try { return read(); }
+            catch (Exception ex)
+            {
+                if (IsClipboardCantOpen(ex))
+                {
+                    if (i == maxRetries - 1)
+                        ClipboardDiagnosticsLog.Write(
+                            $"monitor read {tag} gave_up retries={maxRetries} CLIPBRD_E_CANT_OPEN");
+                    else
+                        Thread.Sleep(delayMs);
+                    continue;
+                }
+                ClipboardDiagnosticsLog.Write($"monitor read {tag} {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static T? TryReadClipboard<T>(Func<T> read, string tag, int maxRetries = 2, int delayMs = 18) where T : class
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            try { return read(); }
+            catch (Exception ex)
+            {
+                if (IsClipboardCantOpen(ex))
+                {
+                    if (i == maxRetries - 1)
+                        ClipboardDiagnosticsLog.Write(
+                            $"monitor read {tag} gave_up retries={maxRetries} CLIPBRD_E_CANT_OPEN");
+                    else
+                        Thread.Sleep(delayMs);
+                    continue;
+                }
+                ClipboardDiagnosticsLog.Write($"monitor read {tag} {ex.GetType().Name}: {ex.Message}");
+                return default;
+            }
+        }
+        return default;
+    }
+
     private void OnClipboardUpdate()
     {
-        if (_isSettingClipboard) { _isSettingClipboard = false; return; }
+        if (_isSettingClipboard)
+        {
+            _isSettingClipboard = false;
+            ClipboardDiagnosticsLog.Write("monitor skip self_set");
+            return;
+        }
         if (ClipboardGate.IsActive) return;
+        if (_pasteInProgress) return;
 
         try
         {
-            if (System.Windows.Clipboard.ContainsFileDropList())
+            if (TryReadClipboardBool(() => System.Windows.Clipboard.ContainsFileDropList(), nameof(System.Windows.Clipboard.ContainsFileDropList)))
             {
-                var files = System.Windows.Clipboard.GetFileDropList();
-                if (files.Count > 0)
+                var files = TryReadClipboard(() => System.Windows.Clipboard.GetFileDropList(), nameof(System.Windows.Clipboard.GetFileDropList));
+                if (files != null && files.Count > 0)
                 {
                     var paths = files.Cast<string>().ToArray();
+                    ClipboardDiagnosticsLog.Write($"monitor FILES in count={paths.Length} {SummarizeFileDropForLog(paths)}");
                     DeduplicateFiles(paths);
                     var fe = new ClipboardEntry { Type = EntryType.Files, FilePaths = paths };
                     _allItems.Insert(0, fe);
@@ -469,9 +538,9 @@ public partial class PopupWindow : Window
                 }
             }
 
-            if (System.Windows.Clipboard.ContainsText())
+            if (TryReadClipboardBool(() => System.Windows.Clipboard.ContainsText(), nameof(System.Windows.Clipboard.ContainsText)))
             {
-                var text = System.Windows.Clipboard.GetText();
+                var text = TryReadClipboard<string>(() => System.Windows.Clipboard.GetText(), nameof(System.Windows.Clipboard.GetText));
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     DeduplicateText(text);
@@ -484,29 +553,81 @@ public partial class PopupWindow : Window
                 }
             }
 
-            if (System.Windows.Clipboard.ContainsImage())
+            if (TryReadClipboardBool(() => System.Windows.Clipboard.ContainsImage(), nameof(System.Windows.Clipboard.ContainsImage)))
             {
-                var image = System.Windows.Clipboard.GetImage();
+                var image = TryReadClipboard<BitmapSource>(() => System.Windows.Clipboard.GetImage(), nameof(System.Windows.Clipboard.GetImage));
                 if (image != null)
                 {
                     if (image.CanFreeze) image.Freeze();
-                    var pngData = ClipboardEntry.EncodeToPng(image);
-                    if (pngData != null)
+                    int pw = image.PixelWidth, ph = image.PixelHeight;
+                    // 必须在当前 UI 线程、且在剪贴板内容仍有效时立刻编码；丢到 Task.Run 会导致位图跨线程访问或未定义生命期 → 闪退
+                    var sw = Stopwatch.StartNew();
+                    byte[]? pngData = null;
+                    ClipboardDiagnosticsLog.Write($"monitor IMAGE clipboard GetImage {pw}x{ph} → EncodeToPng(sync UI)");
+                    try
                     {
-                        var ie = new ClipboardEntry
+                        pngData = ClipboardEntry.EncodeToPng(image);
+                    }
+                    catch (Exception ex)
+                    {
+                        ClipboardDiagnosticsLog.Write(
+                            $"monitor EncodeToPng EX {pw}x{ph} elapsedMs={sw.ElapsedMilliseconds} {ex.GetType().Name}: {ex.Message}");
+                    }
+                    sw.Stop();
+                    if (pngData == null)
+                        ClipboardDiagnosticsLog.Write(
+                            $"monitor EncodeToPng returned null {pw}x{ph} elapsedMs={sw.ElapsedMilliseconds}");
+                    else
+                    {
+                        try
                         {
-                            Type = EntryType.Image, ImageData = pngData,
-                            ImageWidth = image.PixelWidth, ImageHeight = image.PixelHeight
-                        };
-                        _allItems.Insert(0, ie);
-                        TrimItems();
-                        _historyStore.TryInsert(ie);
-                        RefreshFilter();
+                            ClipboardDiagnosticsLog.Write(
+                                $"monitor EncodeToPng OK {pw}x{ph} outBytes={pngData.Length} elapsedMs={sw.ElapsedMilliseconds}");
+                            DeduplicateImageByMd5(pngData);
+                            var ie = new ClipboardEntry
+                            {
+                                Type = EntryType.Image, ImageData = pngData,
+                                ImageWidth = pw, ImageHeight = ph
+                            };
+                            _allItems.Insert(0, ie);
+                            TrimItems();
+                            _historyStore.TryInsert(ie);
+                            RefreshFilter();
+                            ClipboardDiagnosticsLog.Write($"monitor history inserted image outBytes={pngData.Length}");
+                        }
+                        catch (Exception ex)
+                        {
+                            ClipboardDiagnosticsLog.Write(
+                                $"monitor history insert EX {ex.GetType().Name}: {ex.Message}");
+                        }
                     }
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            ClipboardDiagnosticsLog.Write($"monitor outer catch {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>日志用：路径数量、前若干项文件体积估算、首路径缩写（避免单行过长）。</summary>
+    private static string SummarizeFileDropForLog(string[] paths, int maxStatFiles = 48)
+    {
+        if (paths.Length == 0) return "(empty)";
+        long sum = 0;
+        int n = Math.Min(paths.Length, maxStatFiles);
+        for (int i = 0; i < n; i++)
+        {
+            try
+            {
+                var p = paths[i];
+                if (File.Exists(p)) sum += new FileInfo(p).Length;
+            }
+            catch { /* ignore */ }
+        }
+        var first = paths[0];
+        if (first.Length > 120) first = first[..117] + "...";
+        return $"sampleFiles={n}/{paths.Length} sampleBytes≈{sum} first=\"{first}\"";
     }
 
     private void DeduplicateText(string text)
@@ -522,6 +643,17 @@ public partial class PopupWindow : Window
         foreach (var x in _allItems.Where(x => x.Type == EntryType.Files && string.Join("|", x.FilePaths ?? []) == key))
             _historyStore.TryDelete(x.PersistedId);
         _allItems.RemoveAll(x => x.Type == EntryType.Files && string.Join("|", x.FilePaths ?? []) == key);
+    }
+
+    /// <summary>按 PNG 字节 MD5 去掉已有相同图片（含本程序粘贴触发的重复监控写入）。</summary>
+    private void DeduplicateImageByMd5(byte[] pngData)
+    {
+        if (pngData == null || pngData.Length == 0) return;
+        var hex = ClipboardEntry.ComputeImageBytesMd5Hex(pngData);
+        if (hex.Length == 0) return;
+        foreach (var x in _allItems.Where(x => x.Type == EntryType.Image && !x.IsQuickPaste && x.ImageContentMd5Hex == hex))
+            _historyStore.TryDelete(x.PersistedId);
+        _allItems.RemoveAll(x => x.Type == EntryType.Image && !x.IsQuickPaste && x.ImageContentMd5Hex == hex);
     }
 
     private void TrimItems()
@@ -1104,7 +1236,54 @@ public partial class PopupWindow : Window
 
         var mem = _appSettings.LastFileDialogFolder?.Trim();
         var allowShellInject = _appSettings.EnableShellNavigateInject;
-        var candidates = FileManagerPathCollector.CollectCandidates(dialogHwnd, mem);
+
+        unchecked { _fileJumpHotkeyCollectGen++; }
+        var gen = _fileJumpHotkeyCollectGen;
+        var dialogHwndCapture = dialogHwnd;
+        var memCapture = mem;
+        var allowCapture = allowShellInject;
+
+        void StaCollect()
+        {
+            List<FileJumpCandidate> candidates;
+            try
+            {
+                candidates = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture);
+            }
+            catch (Exception ex)
+            {
+                ShellNavigateLog.Write("filejump", "CollectCandidates (hotkey): " + ex);
+                candidates = new List<FileJumpCandidate>();
+            }
+
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (gen != _fileJumpHotkeyCollectGen) return;
+                TryJumpFileDialogToLastFolderContinueAfterCollect(dialogHwndCapture, candidates, allowCapture);
+            }, DispatcherPriority.Normal);
+        }
+
+        var th = new Thread(StaCollect)
+        {
+            IsBackground = true,
+            Name = "ClipboardX-FileJump-Hotkey-Collect",
+        };
+        th.SetApartmentState(ApartmentState.STA);
+        th.Start();
+    }
+
+    private void TryJumpFileDialogToLastFolderContinueAfterCollect(
+        IntPtr dialogHwnd,
+        List<FileJumpCandidate> candidates,
+        bool allowShellInject)
+    {
+        if (_appSettings == null) return;
+        if (dialogHwnd == IntPtr.Zero || !Win32.IsWindow(dialogHwnd))
+        {
+            ClearFileJumpDoubleTapState();
+            return;
+        }
+
         if (candidates.Count == 0)
         {
             ClearFileJumpDoubleTapState();
@@ -1216,19 +1395,74 @@ public partial class PopupWindow : Window
 
         var mem = _appSettings.LastFileDialogFolder?.Trim();
         var allowShellInject = _appSettings.EnableShellNavigateInject;
-        var candidates = FileManagerPathCollector.CollectCandidates(dialogHwnd, mem);
+
+        unchecked { _fileJumpAutoForegroundCollectGen++; }
+        var gen = _fileJumpAutoForegroundCollectGen;
+        var dialogHwndCapture = dialogHwnd;
+        var dialogRootCapture = dialogRoot;
+        var memCapture = mem;
+        var allowCapture = allowShellInject;
+
+        void StaCollect()
+        {
+            List<FileJumpCandidate> candidates;
+            try
+            {
+                candidates = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture);
+            }
+            catch (Exception ex)
+            {
+                ShellNavigateLog.Write("filejump", "CollectCandidates (auto fg): " + ex);
+                candidates = new List<FileJumpCandidate>();
+            }
+
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (gen != _fileJumpAutoForegroundCollectGen) return;
+                TryAutoOpenFileJumpPickerAfterCollect(dialogHwndCapture, dialogRootCapture, candidates, allowCapture);
+            }, DispatcherPriority.Normal);
+        }
+
+        var th = new Thread(StaCollect)
+        {
+            IsBackground = true,
+            Name = "ClipboardX-FileJump-AutoFg-Collect",
+        };
+        th.SetApartmentState(ApartmentState.STA);
+        th.Start();
+    }
+
+    private void TryAutoOpenFileJumpPickerAfterCollect(
+        IntPtr dialogHwnd,
+        IntPtr dialogRoot,
+        List<FileJumpCandidate> candidates,
+        bool allowShellInject)
+    {
+        if (_appSettings == null || !_appSettings.FileJumpPickerOpenWhenDialogForeground) return;
+        if (dialogHwnd == IntPtr.Zero || !Win32.IsWindow(dialogHwnd)) return;
+
+        var dialogRootNow = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
+        if (dialogRootNow == IntPtr.Zero || dialogRootNow != dialogRoot) return;
+
+        var fgNow = Win32.GetForegroundWindow();
+        if (fgNow == IntPtr.Zero) return;
+        var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
+        if (fgRoot != dialogRootNow) return;
+
+        if (dialogRootNow == _fileJumpAutoOpenPickerDoneRoot) return;
+
         if (candidates.Count == 0)
             return;
 
         if (candidates.Count == 1)
         {
-            _fileJumpAutoOpenPickerDoneRoot = dialogRoot;
+            _fileJumpAutoOpenPickerDoneRoot = dialogRootNow;
             FileDialogJumpHelper.TryNavigateToFolder(dialogHwnd, candidates[0].Path, allowShellInject);
             return;
         }
 
         var prefer = PreferCandidateIndex(dialogHwnd, candidates);
-        _fileJumpAutoOpenPickerDoneRoot = dialogRoot;
+        _fileJumpAutoOpenPickerDoneRoot = dialogRootNow;
         if (!_appSettings.FileJumpPickerAutoPopup)
         {
             FileDialogJumpHelper.TryNavigateToFolder(dialogHwnd, candidates[prefer].Path, allowShellInject);
@@ -1770,9 +2004,48 @@ public partial class PopupWindow : Window
         catch { /* ignore */ }
     }
 
+    /// <summary>
+    /// 使用 await Task.Delay 重试，避免 Thread.Sleep 卡死 UI；仅少量短重试，失败快速返回。
+    /// </summary>
+    private static async Task<bool> TrySetClipboardAsync(
+        Action setAction,
+        string logOp,
+        int maxRetries = 2,
+        int delayMs = 40,
+        IntPtr clipNudgeHwnd = default)
+    {
+        Exception? last = null;
+        for (var i = 0; i < maxRetries; i++)
+        {
+            try
+            {
+                Win32.CloseClipboard();
+                setAction();
+                if (i > 0)
+                    ClipboardDiagnosticsLog.Write($"TrySetClipboard OK after retry i={i} op={logOp}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                var hr = ex is COMException com ? $" hr=0x{(uint)com.HResult:X8}" : "";
+                ClipboardDiagnosticsLog.Write($"TrySetClipboard fail attempt={i + 1}/{maxRetries} op={logOp} {ex.GetType().Name}: {ex.Message}{hr}");
+                if (i >= maxRetries - 1) break;
+                if (IsClipboardCantOpen(ex) && clipNudgeHwnd != IntPtr.Zero && Win32.TryEmptyClipboardAfterOpen(clipNudgeHwnd))
+                    ClipboardDiagnosticsLog.Write($"TrySetClipboard reNudge op={logOp} afterAttempt={i + 1}");
+                await Task.Delay(delayMs);
+            }
+        }
+        ClipboardDiagnosticsLog.Write($"TrySetClipboard GAVE_UP op={logOp} last={last?.GetType().Name}: {last?.Message}");
+        return false;
+    }
+
     private async void PasteSelectedItem()
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item) return;
+        _pasteInProgress = true;
+        try
+        {
         ClearPendingDelete();
 
         if (!item.IsQuickPaste)
@@ -1784,38 +2057,162 @@ public partial class PopupWindow : Window
                 _historyStore.TryUpdateCopiedAt(pid, item.CopiedAt);
         }
 
+        if (_targetWindow != IntPtr.Zero && !Win32.IsWindow(_targetWindow))
+            _targetWindow = IntPtr.Zero;
+
+        var tgt = _targetWindow.ToInt64();
+        ClipboardDiagnosticsLog.Write(item.Type switch
+        {
+            EntryType.Text => $"paste BEGIN Text len={item.TextContent?.Length ?? 0} target=0x{tgt:X} gwFocus={Win32.GetForegroundWindow().ToInt64():X}",
+            EntryType.Image => $"paste BEGIN Image pngBytes={item.ImageData?.Length ?? 0} target=0x{tgt:X}",
+            EntryType.Files => $"paste BEGIN Files {SummarizeFileDropForLog(item.FilePaths ?? [])} target=0x{tgt:X}",
+            _ => $"paste BEGIN type={item.Type} target=0x{tgt:X}"
+        });
+
+        // 在仍是弹窗前台时 OpenClipboard，常与目标进程（大段文本/富文本 OLE）争用 → 连续 CLIPBRD_E_CANT_OPEN。先 Hide + 强力切回目标并等待剪贴板释放。
+        HidePopup();
+        if (_targetWindow != IntPtr.Zero)
+            Win32.SetForegroundWindowAggressive(_targetWindow);
+        var textLen = item.TextContent?.Length ?? 0;
+        var imgBytes = item.ImageData?.Length ?? 0;
+        var imgPixels = item.Type == EntryType.Image ? item.ImageWidth * item.ImageHeight : 0;
+        var hugeClipboardImage = item.Type == EntryType.Image && (imgBytes > 900_000 || imgPixels > 1_200_000);
+        var focusSettleMs = item.Type switch
+        {
+            EntryType.Text => textLen > 12000 ? 150 : textLen > 4000 ? 120 : 70,
+            EntryType.Image => hugeClipboardImage ? 220 : 160,
+            _ => 50
+        };
+        await Task.Delay(focusSettleMs);
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+        ClipboardDiagnosticsLog.Write($"paste focusSettleMs={focusSettleMs} after Hide+SetForegroundAggressive");
+
+        if (_hwnd != IntPtr.Zero)
+        {
+            var nudged = Win32.TryEmptyClipboardAfterOpen(_hwnd);
+            ClipboardDiagnosticsLog.Write($"paste clipNudge EmptyClipboard ok={nudged}");
+        }
+
         _isSettingClipboard = true;
+        bool clipboardOk = false;
         try
         {
             switch (item.Type)
             {
                 case EntryType.Text:
-                    System.Windows.Clipboard.SetText(item.TextContent!);
+                    clipboardOk = await TrySetClipboardAsync(
+                        () => System.Windows.Clipboard.SetText(item.TextContent!),
+                        $"SetText len={textLen}",
+                        clipNudgeHwnd: _hwnd);
                     break;
                 case EntryType.Image:
+                    // BitmapDecoder+Frame 在 using 结束后会释放流，而 SetImage 对 OLE 常延迟落盘，目标程序 Ctrl+V 拿到空/坏图。
+                    // BitmapImage + OnLoad 在 EndInit 时把像素读入内存，Freeze 后可安全关闭流再写剪贴板。
+                    BitmapImage? bi = null;
+                    var swDec = Stopwatch.StartNew();
                     using (var ms = new MemoryStream(item.ImageData!))
                     {
-                        var decoder = BitmapDecoder.Create(ms, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
-                        System.Windows.Clipboard.SetImage(decoder.Frames[0]);
+                        bi = new BitmapImage();
+                        bi.BeginInit();
+                        bi.StreamSource = ms;
+                        bi.CacheOption = BitmapCacheOption.OnLoad;
+                        bi.EndInit();
+                    }
+                    swDec.Stop();
+                    if (bi == null) break;
+                    if (bi.CanFreeze) bi.Freeze();
+                    ClipboardDiagnosticsLog.Write(
+                        $"paste image loadMs={swDec.ElapsedMilliseconds} frame={bi.PixelWidth}x{bi.PixelHeight} storedPng={item.ImageData?.Length ?? 0}");
+                    clipboardOk = await TrySetClipboardAsync(
+                        () => System.Windows.Clipboard.SetImage(bi),
+                        $"SetImage {bi.PixelWidth}x{bi.PixelHeight}",
+                        clipNudgeHwnd: _hwnd);
+                    if (!clipboardOk && item.ImageData is { Length: > 0 })
+                    {
+                        string? tmpPath = null;
+                        try
+                        {
+                            var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+                            Directory.CreateDirectory(dir);
+                            tmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
+                            File.WriteAllBytes(tmpPath, item.ImageData);
+                            var flFb = new StringCollection();
+                            flFb.Add(tmpPath);
+                            clipboardOk = await TrySetClipboardAsync(
+                                () => System.Windows.Clipboard.SetFileDropList(flFb),
+                                "SetFileDropList imageFallback",
+                                clipNudgeHwnd: _hwnd);
+                            if (!clipboardOk)
+                            {
+                                try { File.Delete(tmpPath); } catch { /* ignore */ }
+                            }
+                            else
+                                ClipboardDiagnosticsLog.Write($"paste image fallback SetFileDropList ok \"{tmpPath}\"");
+                        }
+                        catch (Exception ex)
+                        {
+                            ClipboardDiagnosticsLog.Write($"paste image fallback EX {ex.GetType().Name}: {ex.Message}");
+                            if (tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
+                        }
                     }
                     break;
                 case EntryType.Files:
                     var fl = new StringCollection();
                     fl.AddRange(item.FilePaths!);
-                    System.Windows.Clipboard.SetFileDropList(fl);
+                    clipboardOk = await TrySetClipboardAsync(
+                        () => System.Windows.Clipboard.SetFileDropList(fl),
+                        $"SetFileDropList count={fl.Count} {SummarizeFileDropForLog(item.FilePaths!)}",
+                        clipNudgeHwnd: _hwnd);
                     break;
             }
         }
-        catch { _isSettingClipboard = false; return; }
+        catch (Exception ex)
+        {
+            ClipboardDiagnosticsLog.Write($"paste unexpected before/during set {ex.GetType().Name}: {ex.Message}");
+        }
 
-        HidePopup();
-        if (_targetWindow != IntPtr.Zero) Win32.SetForegroundWindow(_targetWindow);
-        await Task.Delay(60);
-        SendCtrlV();
+        ClipboardDiagnosticsLog.Write($"paste END clipboardOk={clipboardOk} willSendCtrlV={clipboardOk}");
+
+        if (!clipboardOk)
+            _isSettingClipboard = false;
+        else
+            // SystemIdle 晚于 WM_CLIPBOARDUPDATE，避免抢先清空标志把本次 Set 误判为外部剪贴板内容
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
+
+        if (clipboardOk)
+        {
+            var prePasteDelayMs = item.Type == EntryType.Image ? 85 : 45;
+            await Task.Delay(prePasteDelayMs);
+            SendCtrlV();
+        }
+        }
+        finally
+        {
+            _pasteInProgress = false;
+        }
+    }
+
+    private static void ReleaseAllModifiers()
+    {
+        ushort[] mods = {
+            Win32.VK_CONTROL, Win32.VK_LCONTROL, Win32.VK_RCONTROL,
+            Win32.VK_SHIFT, Win32.VK_LSHIFT, Win32.VK_RSHIFT,
+            Win32.VK_MENU, Win32.VK_LMENU, Win32.VK_RMENU,
+            Win32.VK_LWIN, Win32.VK_RWIN
+        };
+        var inputs = new Win32.INPUT[mods.Length];
+        for (int i = 0; i < mods.Length; i++)
+        {
+            inputs[i].type = Win32.INPUT_KEYBOARD;
+            inputs[i].u.ki.wVk = mods[i];
+            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        }
+        Win32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Win32.INPUT>());
     }
 
     private static void SendCtrlV()
     {
+        ReleaseAllModifiers();
         var inputs = new Win32.INPUT[4];
         inputs[0].type = Win32.INPUT_KEYBOARD; inputs[0].u.ki.wVk = Win32.VK_CONTROL;
         inputs[1].type = Win32.INPUT_KEYBOARD; inputs[1].u.ki.wVk = Win32.VK_V;
@@ -1831,6 +2228,9 @@ public partial class PopupWindow : Window
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item || item.Type != EntryType.Image) return;
         if (item.ImageData is not { Length: > 0 }) return;
+        _pasteInProgress = true;
+        try
+        {
         ClearPendingDelete();
 
         if (!item.IsQuickPaste)
@@ -1856,24 +2256,51 @@ public partial class PopupWindow : Window
         }
         catch { return; }
 
+        if (_targetWindow != IntPtr.Zero && !Win32.IsWindow(_targetWindow))
+            _targetWindow = IntPtr.Zero;
+
+        ClipboardDiagnosticsLog.Write(
+            $"pasteAsFile BEGIN pngBytes={item.ImageData?.Length ?? 0} temp=\"{path}\" target=0x{_targetWindow.ToInt64():X}");
+
+        HidePopup();
+        if (_targetWindow != IntPtr.Zero)
+            Win32.SetForegroundWindowAggressive(_targetWindow);
+        await Task.Delay(85);
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+        if (_hwnd != IntPtr.Zero)
+            Win32.TryEmptyClipboardAfterOpen(_hwnd);
+
         _isSettingClipboard = true;
-        try
-        {
-            var fl = new StringCollection();
-            fl.Add(path);
-            System.Windows.Clipboard.SetFileDropList(fl);
-        }
-        catch
+        var fl = new StringCollection();
+        fl.Add(path);
+        bool clipboardOk = await TrySetClipboardAsync(
+            () => System.Windows.Clipboard.SetFileDropList(fl),
+            $"SetFileDropList explorer_temp file=\"{path}\"",
+            clipNudgeHwnd: _hwnd);
+
+        ClipboardDiagnosticsLog.Write($"pasteAsFile END clipboardOk={clipboardOk}");
+
+        if (!clipboardOk)
         {
             _isSettingClipboard = false;
             try { File.Delete(path); } catch { /* ignore */ }
-            return;
+        }
+        else
+        {
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
         }
 
-        HidePopup();
-        if (_targetWindow != IntPtr.Zero) Win32.SetForegroundWindow(_targetWindow);
-        await Task.Delay(60);
-        SendCtrlV();
+        if (clipboardOk)
+        {
+            await Task.Delay(60);
+            SendCtrlV();
+        }
+        }
+        finally
+        {
+            _pasteInProgress = false;
+        }
     }
 
     #endregion

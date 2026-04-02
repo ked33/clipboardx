@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -60,6 +61,9 @@ public partial class FileDialogJumpPickerWindow : Window
     private string _searchText = "";
     private bool _favoritesOnly;
     private int _firstVisibleIndex;
+
+    /// <summary>粘性模式下点击导航后异步采集；新一次点击递增，过时回调丢弃。</summary>
+    private int _commitNavigateKeepOpenGen;
 
     private readonly List<FileJumpPickerRow> _masterRows = new();
     private readonly ObservableCollection<FileJumpPickerRow> _displayRows = new();
@@ -996,39 +1000,91 @@ public partial class FileDialogJumpPickerWindow : Window
     /// <summary>粘性自动模式：只切换文件对话框目录并刷新列表，不关闭窗口。</summary>
     private void CommitNavigateKeepOpen(string path)
     {
-        if (!FileDialogJumpHelper.TryNavigateToFolder(_fileDialogOwnerHwnd, path,
-                _settings.EnableShellNavigateInject))
-            return;
+        unchecked { _commitNavigateKeepOpenGen++; }
+        var gen = _commitNavigateKeepOpenGen;
+        var dlgHwnd = _fileDialogOwnerHwnd;
+        var allowInject = _settings.EnableShellNavigateInject;
+        var memBefore = _settings.LastFileDialogFolder?.Trim();
 
-        try
+        void StaWork()
         {
-            if (FileDialogJumpHelper.TryReadCurrentFolder(_fileDialogOwnerHwnd, out var folder)
-                && !string.IsNullOrEmpty(folder))
+            if (!FileDialogJumpHelper.TryNavigateToFolder(dlgHwnd, path, allowInject))
+                return;
+
+            string? folderAfter = null;
+            try
             {
-                _settings.LastFileDialogFolder = folder;
-                _settings.Save();
+                if (FileDialogJumpHelper.TryReadCurrentFolder(dlgHwnd, out var folder)
+                    && !string.IsNullOrEmpty(folder))
+                    folderAfter = folder;
             }
-        }
-        catch { /* ignore */ }
+            catch { /* ignore */ }
 
-        var mem = _settings.LastFileDialogFolder?.Trim();
-        List<FileJumpCandidate> fresh;
-        try
-        {
-            fresh = FileManagerPathCollector.CollectCandidates(_fileDialogOwnerHwnd, mem);
-        }
-        catch
-        {
-            return;
+            var memForCollect = !string.IsNullOrEmpty(folderAfter?.Trim())
+                ? folderAfter.Trim()
+                : memBefore;
+
+            List<FileJumpCandidate> fresh;
+            try
+            {
+                fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect);
+            }
+            catch
+            {
+                // 与原先一致：采集失败则不刷新列表，但仍尽量写入当前目录记忆。
+                var folderOnly = folderAfter;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (gen != _commitNavigateKeepOpenGen) return;
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(folderOnly))
+                        {
+                            _settings.LastFileDialogFolder = folderOnly;
+                            _settings.Save();
+                        }
+                    }
+                    catch { /* ignore */ }
+                }, DispatcherPriority.Normal);
+                return;
+            }
+
+            var folderForSettings = folderAfter;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (gen != _commitNavigateKeepOpenGen) return;
+                try
+                {
+                    if (!string.IsNullOrEmpty(folderForSettings))
+                    {
+                        _settings.LastFileDialogFolder = folderForSettings;
+                        _settings.Save();
+                    }
+                }
+                catch { /* ignore */ }
+
+                ApplyNavigateKeepOpenListRefresh(path, fresh);
+            }, DispatcherPriority.Normal);
         }
 
+        var th = new Thread(StaWork)
+        {
+            IsBackground = true,
+            Name = "ClipboardX-JumpPicker-NavigateRefresh",
+        };
+        th.SetApartmentState(ApartmentState.STA);
+        th.Start();
+    }
+
+    private void ApplyNavigateKeepOpenListRefresh(string committedPath, List<FileJumpCandidate> fresh)
+    {
         _collectorSnapshot.Clear();
         _collectorSnapshot.AddRange(fresh);
 
         BuildMasterList();
         RefreshFilter();
         var i = _displayRows.ToList().FindIndex(r =>
-            string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
+            string.Equals(r.Path, committedPath, StringComparison.OrdinalIgnoreCase));
         if (i >= 0)
         {
             ItemsList.SelectedIndex = i;

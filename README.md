@@ -90,7 +90,7 @@
 | 多条候选、延时为 0 | **立即**弹列表 |
 | **点击后自动跳转**（设置默认开） | 对话框成为前台后，**第一次**在框内点左键即按列表**首条**路径跳转；**同一对话框窗口存活期内只自动跳一次**（关掉再开才再来），手动 **Ctrl+G** 不受影响 |
 
-**路径来源（摘录）：** 资源管理器；**Total Commander / XYplorer / Directory Opus**（与 [QuickSwitch](https://github.com/gepruts/QuickSwitch) 同类专用通道）；以及 FreeCommander、Double Commander、OneCommander 等**白名单进程**上的**浅层 UI 自动化**（无官方 API 时尽力而为，双栏可能只取一侧）；另含**记忆的上次路径**、列表**收藏**。无任何路径则本次按键无效——可先在外部管理器进到目标目录再试。
+**路径来源（摘录）：** 资源管理器；**Total Commander / XYplorer / Directory Opus**（与 [QuickSwitch](https://github.com/gepruts/QuickSwitch) 同类专用通道）；以及 FreeCommander、Double Commander、Q-Dir、OneCommander 等**白名单进程**上的**浅层 UI 自动化**（无官方 API 时尽力而为，多栏/四格可能只取扫描到的一条路径）；另含**记忆的上次路径**、列表**收藏**。无任何路径则本次按键无效——可先在外部管理器进到目标目录再试。
 
 ### 跳转列表里的操作
 
@@ -136,7 +136,7 @@
 | **Shell 注入**（公共对话框） | **支持**（`IShellBrowser`，可关） | 有类似深度能力 | **无** | **无** |
 | **首次点击自动跳** | **支持**（可关） | 有类似能力 | **无** | **无** |
 
-**路径采集分层（摘录）：** 第一档为资源管理器 COM、Total Commander 消息、XYplorer `WM_COPYDATA`、Directory Opus CLI 等；第二档为 FreeCommander、Double Commander、OneCommander 等在**进程白名单**下的浅层 UI Automation。**ClipboardX** 与 QuickSwitch / 逍遥在覆盖面上侧重点不同：前者在「广谱管理器 + WPS + 二合一」上更均衡；QuickSwitch 在 TC/XY/DO 上极专；逍遥在 **WPS 地址栏** 等路线上与 ClipboardX 有思路交集（如 ReBar + F4）。
+**路径采集分层（摘录）：** 第一档为资源管理器 COM、Total Commander 消息、XYplorer `WM_COPYDATA`、Directory Opus CLI 等；第二档为 FreeCommander、Double Commander、Q-Dir、OneCommander 等在**进程白名单**下的浅层 UI Automation。**ClipboardX** 与 QuickSwitch / 逍遥在覆盖面上侧重点不同：前者在「广谱管理器 + WPS + 二合一」上更均衡；QuickSwitch 在 TC/XY/DO 上极专；逍遥在 **WPS 地址栏** 等路线上与 ClipboardX 有思路交集（如 ReBar + F4）。
 
 ### 「二合一」在常驻上的差异
 

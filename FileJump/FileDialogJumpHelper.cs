@@ -317,7 +317,8 @@ internal static class FileDialogJumpHelper
         return false;
     }
 
-    private static bool TryWpsBreadcrumbTextToFolder(string? text, out string folder)
+    /// <summary>将地址栏/名称中的「此电脑 &gt; …」或「C: &gt; …」等面包屑文本还原为已存在目录（Q-Dir、WPS 等共用）。</summary>
+    internal static bool TryWpsBreadcrumbTextToFolder(string? text, out string folder)
     {
         folder = "";
         if (string.IsNullOrWhiteSpace(text)) return false;

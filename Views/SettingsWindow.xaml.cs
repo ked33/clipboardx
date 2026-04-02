@@ -317,18 +317,6 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void FolderJumpHelp_Click(object sender, RoutedEventArgs e)
-    {
-        e.Handled = true;
-        if (sender is not FrameworkElement origin || origin.Tag is not string tag || string.IsNullOrEmpty(tag))
-            return;
-        var titleKey = $"FolderJumpHelp_{tag}_Title";
-        var bodyKey = $"FolderJumpHelp_{tag}_Body";
-        var title = origin.TryFindResource(titleKey) as string ?? "说明";
-        var body = origin.TryFindResource(bodyKey) as string ?? "";
-        System.Windows.MessageBox.Show(this, body, title, MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
     private void ThemeCycle_Click(object sender, RoutedEventArgs e)
     {
         _pendingTheme = _pendingTheme switch
