@@ -141,9 +141,10 @@ internal static class FileDialogJumpHelper
             return true;
 
         // WPS Qt5 自绘对话框：GetWindowText 为空且 UIA 不可用。
-        // WPS 主窗口/首页的 Win32 标题不为空（任务栏需要显示），
-        // 只有弹出的文件对话框才是空标题 Qt 窗口。
-        if (string.IsNullOrEmpty(title))
+        // WPS 主窗口/首页/新建页同样是空标题 Qt 窗口，需排除：
+        // 文件对话框由主窗口弹出，有 owner；主窗口/首页无 owner。
+        if (string.IsNullOrEmpty(title)
+            && Win32.GetWindow(hwnd, Win32.GW_OWNER) != IntPtr.Zero)
             return true;
 
         return false;

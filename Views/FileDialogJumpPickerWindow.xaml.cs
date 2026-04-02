@@ -653,7 +653,9 @@ public partial class FileDialogJumpPickerWindow : Window
             _dockFollowTimer.Tick += (_, _) => DockFollowTick();
             _dockFollowTimer.Start();
         }
-        Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.Input);
+        // 与 Activated 一致：粘性自动前台模式不抢焦点，避免与 WPS/Qt 地址栏导航抢前台形成反复全选+粘贴
+        if (!_autoForegroundStickyMode)
+            Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.Input);
     }
 
     private void DockFollowTick()
@@ -1006,65 +1008,81 @@ public partial class FileDialogJumpPickerWindow : Window
         var allowInject = _settings.EnableShellNavigateInject;
         var memBefore = _settings.LastFileDialogFolder?.Trim();
 
+        // 导航过程会通过 SendInput 向目标对话框发送键盘事件（Alt+N / Ctrl+A / 路径 / Enter）；
+        // 低级键盘钩子仍在运行，会拦截 Enter 并再次 CommitSelection → 死循环。
+        // 在导航+采集完成前抑制钩子，让按键直接传递到目标对话框。
+        _suppressJumpHook = true;
+
         void StaWork()
         {
-            if (!FileDialogJumpHelper.TryNavigateToFolder(dlgHwnd, path, allowInject))
-                return;
-
-            string? folderAfter = null;
             try
             {
-                if (FileDialogJumpHelper.TryReadCurrentFolder(dlgHwnd, out var folder)
-                    && !string.IsNullOrEmpty(folder))
-                    folderAfter = folder;
-            }
-            catch { /* ignore */ }
+                if (!FileDialogJumpHelper.TryNavigateToFolder(dlgHwnd, path, allowInject))
+                    return;
 
-            var memForCollect = !string.IsNullOrEmpty(folderAfter?.Trim())
-                ? folderAfter.Trim()
-                : memBefore;
+                string? folderAfter = null;
+                try
+                {
+                    if (FileDialogJumpHelper.TryReadCurrentFolder(dlgHwnd, out var folder)
+                        && !string.IsNullOrEmpty(folder))
+                        folderAfter = folder;
+                }
+                catch { /* ignore */ }
 
-            List<FileJumpCandidate> fresh;
-            try
-            {
-                fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect);
-            }
-            catch
-            {
-                // 与原先一致：采集失败则不刷新列表，但仍尽量写入当前目录记忆。
-                var folderOnly = folderAfter;
+                var memForCollect = !string.IsNullOrEmpty(folderAfter?.Trim())
+                    ? folderAfter.Trim()
+                    : memBefore;
+
+                List<FileJumpCandidate> fresh;
+                try
+                {
+                    fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect);
+                }
+                catch
+                {
+                    // 与原先一致：采集失败则不刷新列表，但仍尽量写入当前目录记忆。
+                    var folderOnly = folderAfter;
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        if (gen != _commitNavigateKeepOpenGen) return;
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(folderOnly))
+                            {
+                                _settings.LastFileDialogFolder = folderOnly;
+                                _settings.Save();
+                            }
+                        }
+                        catch { /* ignore */ }
+                    }, DispatcherPriority.Normal);
+                    return;
+                }
+
+                var folderForSettings = folderAfter;
                 Dispatcher.BeginInvoke(() =>
                 {
                     if (gen != _commitNavigateKeepOpenGen) return;
                     try
                     {
-                        if (!string.IsNullOrEmpty(folderOnly))
+                        if (!string.IsNullOrEmpty(folderForSettings))
                         {
-                            _settings.LastFileDialogFolder = folderOnly;
+                            _settings.LastFileDialogFolder = folderForSettings;
                             _settings.Save();
                         }
                     }
                     catch { /* ignore */ }
+
+                    ApplyNavigateKeepOpenListRefresh(path, fresh);
                 }, DispatcherPriority.Normal);
-                return;
             }
-
-            var folderForSettings = folderAfter;
-            Dispatcher.BeginInvoke(() =>
+            finally
             {
-                if (gen != _commitNavigateKeepOpenGen) return;
-                try
+                Dispatcher.BeginInvoke(() =>
                 {
-                    if (!string.IsNullOrEmpty(folderForSettings))
-                    {
-                        _settings.LastFileDialogFolder = folderForSettings;
-                        _settings.Save();
-                    }
-                }
-                catch { /* ignore */ }
-
-                ApplyNavigateKeepOpenListRefresh(path, fresh);
-            }, DispatcherPriority.Normal);
+                    if (gen == _commitNavigateKeepOpenGen)
+                        _suppressJumpHook = false;
+                }, DispatcherPriority.Normal);
+            }
         }
 
         var th = new Thread(StaWork)

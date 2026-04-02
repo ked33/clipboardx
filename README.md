@@ -89,6 +89,7 @@
 | 多条候选、延时大于 0 ms | 先延时再弹列表；**延时内再按一次同一快捷键** → 直接跳当前预选项 |
 | 多条候选、延时为 0 | **立即**弹列表 |
 | **点击后自动跳转**（设置默认开） | 对话框成为前台后，**第一次**在框内点左键即按列表**首条**路径跳转；**同一对话框窗口存活期内只自动跳一次**（关掉再开才再来），手动 **Ctrl+G** 不受影响 |
+| **对话框到前台自动执行** | 开启后，检测到「打开 / 保存」对话框成为前台时，无需按快捷键即自动采集路径并弹出跳转列表（多候选）或直跳（单候选）。跳转列表紧贴对话框并随窗口移动，同一对话框顶层窗口只自动处理一次。可在设置中关闭 |
 
 **路径来源（摘录）：** 资源管理器；**Total Commander / XYplorer / Directory Opus**（与 [QuickSwitch](https://github.com/gepruts/QuickSwitch) 同类专用通道）；以及 FreeCommander、Double Commander、Q-Dir、OneCommander 等**白名单进程**上的**浅层 UI 自动化**（无官方 API 时尽力而为，多栏/四格可能只取扫描到的一条路径）；另含**记忆的上次路径**、列表**收藏**。无任何路径则本次按键无效——可先在外部管理器进到目标目录再试。
 
@@ -135,6 +136,7 @@
 | **WPS** 非 `#32770` 框 | **专门多策略** | 部分场景 | 基本不涉及 | **重点适配** |
 | **Shell 注入**（公共对话框） | **支持**（`IShellBrowser`，可关） | 有类似深度能力 | **无** | **无** |
 | **首次点击自动跳** | **支持**（可关） | 有类似能力 | **无** | **无** |
+| **对话框到前台自动执行** | **支持**（自动弹列表/直跳，可关） | 有类似能力 | **无** | **无** |
 
 **路径采集分层（摘录）：** 第一档为资源管理器 COM、Total Commander 消息、XYplorer `WM_COPYDATA`、Directory Opus CLI 等；第二档为 FreeCommander、Double Commander、Q-Dir、OneCommander 等在**进程白名单**下的浅层 UI Automation。**ClipboardX** 与 QuickSwitch / 逍遥在覆盖面上侧重点不同：前者在「广谱管理器 + WPS + 二合一」上更均衡；QuickSwitch 在 TC/XY/DO 上极专；逍遥在 **WPS 地址栏** 等路线上与 ClipboardX 有思路交集（如 ReBar + F4）。
 
@@ -149,6 +151,7 @@
 | 维度 | ClipboardX |
 |------|------------|
 | 剪贴板弹窗 | **不抢焦点**、可跟光标、**拼音**检索，路径与 Ditto/CopyQ 不同 |
+| 粘贴方式 | 使用 **Shift+Insert** 系统级粘贴，兼容性优于 Ctrl+V（不被应用层快捷键映射拦截） |
 | 公共「打开/保存」 | 可选 **Shell 深度跳转**，亦可全模拟 |
 | **WPS** | **多策略回退**（自动化、ComboBox、ReBar+F4、快捷键等） |
 | 管理器路径 | **协议 + UIA 白名单**，覆盖面广于「只做两三款管理器」的专用工具 |
@@ -226,6 +229,24 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 - **编译 DLL**：`powershell -ExecutionPolicy Bypass -File native\ShellNavigate\build.ps1`（需 MSVC + Windows SDK；可加 **`-InstallBuildTools`** 用 winget 装 VS Build Tools，较慢）。产物会随 `ClipboardManager.csproj` 条件复制到输出根目录。若工具集报错，可改 `native\ShellNavigate\ClipboardXShellNavigate.vcxproj` 中 `PlatformToolset`（**v143** / **v142**）与本地一致。
 - **日志**：**`%LocalAppData%\ClipboardX\shell_navigate.log`**（UTF-8）。**inject** 为托管端写入；**native** 为注入 DLL 在宿主内写入。调试识别与 WPS 等回退时也可关注 **wps**、**custom_fd** 等前缀行。
+
+## 更新记录
+
+完整历史见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**，以下摘录主要变更。
+
+### v1.1.6
+
+- **对话框到前台自动执行**：检测到打开/保存对话框成为前台时自动采集路径并弹出跳转列表或直跳，无需按快捷键；跳转列表紧贴对话框跟随移动
+- **粘贴改用 Shift+Insert**：系统级粘贴快捷键，不会被应用层快捷键映射拦截（如 VSCode 等 Electron 应用），兼容性优于 Ctrl+V
+- **WPS 对话框识别优化**：排除 WPS 新建页等非对话框 Qt 窗口的误匹配（检查窗口 owner）
+- **修复 WPS 粘性跳转死循环**：粘性自动模式下导航期间抑制键盘钩子，防止 Enter 键被拦截导致无限循环
+
+### v1.1.5
+
+- 自定义文件对话框规则管理（导入/导出/探测向导）
+- 剪贴板写入重试与诊断日志
+- 图片粘贴回退为文件列表
+- Q-Dir 等更多文件管理器路径采集
 
 ## 许可证
 

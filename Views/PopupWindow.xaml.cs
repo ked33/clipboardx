@@ -1444,6 +1444,10 @@ public partial class PopupWindow : Window
         var dialogRootNow = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRootNow == IntPtr.Zero || dialogRootNow != dialogRoot) return;
 
+        // 采集在线程里异步完成；列表窗可能已通过 BeginInvoke 打开：避免再次直跳/调度造成 WPS Qt 路径重复导航
+        if (_activeFileJumpPicker != null) return;
+        if (_fileJumpPickerOpenInProgress) return;
+
         var fgNow = Win32.GetForegroundWindow();
         if (fgNow == IntPtr.Zero) return;
         var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
@@ -2192,27 +2196,8 @@ public partial class PopupWindow : Window
         }
     }
 
-    private static void ReleaseAllModifiers()
-    {
-        ushort[] mods = {
-            Win32.VK_CONTROL, Win32.VK_LCONTROL, Win32.VK_RCONTROL,
-            Win32.VK_SHIFT, Win32.VK_LSHIFT, Win32.VK_RSHIFT,
-            Win32.VK_MENU, Win32.VK_LMENU, Win32.VK_RMENU,
-            Win32.VK_LWIN, Win32.VK_RWIN
-        };
-        var inputs = new Win32.INPUT[mods.Length];
-        for (int i = 0; i < mods.Length; i++)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = mods[i];
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-        }
-        Win32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Win32.INPUT>());
-    }
-
     private static void SendCtrlV()
     {
-        ReleaseAllModifiers();
         var inputs = new Win32.INPUT[4];
         inputs[0].type = Win32.INPUT_KEYBOARD; inputs[0].u.ki.wVk = Win32.VK_CONTROL;
         inputs[1].type = Win32.INPUT_KEYBOARD; inputs[1].u.ki.wVk = Win32.VK_V;

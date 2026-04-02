@@ -382,6 +382,7 @@ internal static class Win32
     public static extern IntPtr SetFocus(IntPtr hWnd);
 
     public const uint GW_HWNDNEXT = 2;
+    public const uint GW_OWNER = 4;
     public const uint WM_COPYDATA = 0x004A;
     public const uint WM_SETTEXT = 0x000C;
     public const uint WM_GETTEXT = 0x000D;
