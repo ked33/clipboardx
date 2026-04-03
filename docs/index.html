@@ -80,7 +80,7 @@ td:first-child{font-weight:600}
 .tag-peach{background:rgba(250,179,135,.12);color:var(--peach)}
 
 /* --- download --- */
-.dl-cards{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.dl-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px}
 .dl-card{background:var(--surface);border:1px solid var(--surface2);border-radius:var(--radius);padding:28px;text-align:center}
 .dl-card h4{font-size:1.05rem;margin-bottom:8px}
 .dl-card p{font-size:.85rem;color:var(--subtext);margin-bottom:16px}
@@ -109,6 +109,7 @@ footer a{color:var(--subtext)}
       <a href="#features" class="hide-m">功能</a>
       <a href="#compare" class="hide-m">对比</a>
       <a href="#download" class="hide-m">下载</a>
+      <a href="https://github.com/chaojimct/clipboardx/blob/master/docs/ClipboardX-Introduction.md" class="hide-m" target="_blank">深度介绍</a>
       <a class="btn btn-outline" href="https://github.com/chaojimct/clipboardx" target="_blank">⭐ GitHub</a>
     </div>
   </div>
@@ -182,7 +183,7 @@ footer a{color:var(--subtext)}
       <div class="feat-card">
         <div class="icon">⚡</div>
         <h4>快捷短语</h4>
-        <p>在设置中预置常用文本片段，搜索时优先展示，一键粘贴常用内容。</p>
+        <p>列表项<strong>右键 → 设为快捷短语</strong>，绑定关键词后固定参与列表；可切到「⚡ 短语」视图集中管理。</p>
       </div>
     </div>
   </div>
@@ -225,6 +226,11 @@ footer a{color:var(--subtext)}
         <h4>收藏与记忆</h4>
         <p>支持收藏常用路径、自动记忆上次对话框目录，在跳转列表中统一展示和搜索。</p>
       </div>
+      <div class="feat-card">
+        <div class="icon">🔁</div>
+        <h4>切回时自动同步</h4>
+        <p>从资源管理器切回已打开的文件对话框时可刷新候选；开启设置项后，若外部当前文件夹与对话框目录不一致则自动跳转，与「到前台自动执行」互补。</p>
+      </div>
     </div>
   </div>
 </section>
@@ -264,6 +270,7 @@ footer a{color:var(--subtext)}
         <tr><td>WPS 适配</td><td class="y">✔ 六重降级</td><td>部分</td><td>逍遥快跳基础适配</td></tr>
         <tr><td>首次点击自动跳</td><td class="y">✔</td><td class="n">✘</td><td class="n">✘</td></tr>
         <tr><td>对话框到前台自动执行</td><td class="y">✔ 自动弹列表/直跳</td><td>有类似能力</td><td class="n">✘</td></tr>
+        <tr><td>切回对话框时自动同步路径</td><td class="y">✔ 可关</td><td>视版本</td><td class="n">少见</td></tr>
         <tr><td>开源</td><td class="y">✔</td><td class="n">✘ 闭源收费</td><td class="y">✔</td></tr>
         <tr><td>剪贴板管理</td><td class="y">✔ 内置</td><td class="n">✘</td><td class="n">✘</td></tr>
       </tbody>
@@ -274,19 +281,30 @@ footer a{color:var(--subtext)}
 <!-- download -->
 <section id="download">
   <h2 class="section-title">下载使用</h2>
-  <p class="section-sub">支持 Windows 10 / 11，解压即用</p>
+  <p class="section-sub">Windows 10 / 11（x64）。Releases 另有<strong>仅剪贴板</strong>、<strong>仅文件跳转</strong>等 zip，详见 <a href="https://github.com/chaojimct/clipboardx/blob/master/docs/ClipboardX-Introduction.md" target="_blank">深度介绍文档</a> 或仓库 README。</p>
   <div class="dl-cards">
     <div class="dl-card">
-      <h4>🪶 精简包</h4>
-      <p>体积更小，需已安装 <a href="https://dotnet.microsoft.com/download/dotnet/8.0" target="_blank">.NET 8 桌面运行时</a></p>
-      <a class="btn btn-outline" href="https://github.com/chaojimct/clipboardx/releases">ClipboardX-*-no-runtime.zip</a>
+      <h4>📥 安装包（精简）</h4>
+      <p><code>ClipboardX-*-setup.exe</code> — 体积小；需 .NET 8 桌面运行时。未安装时向导可跳转官方下载页。</p>
+      <a class="btn btn-outline" href="https://github.com/chaojimct/clipboardx/releases">前往 Releases</a>
     </div>
     <div class="dl-card">
-      <h4>📦 完整包</h4>
-      <p>自带运行时，无需额外安装任何依赖</p>
-      <a class="btn btn-primary" href="https://github.com/chaojimct/clipboardx/releases">ClipboardX-*-self-contained.zip</a>
+      <h4>📥 安装包（自包含）</h4>
+      <p><code>ClipboardX-*-setup-self-contained.exe</code> — 自带运行时；带开始菜单与卸载项。</p>
+      <a class="btn btn-primary" href="https://github.com/chaojimct/clipboardx/releases">前往 Releases</a>
+    </div>
+    <div class="dl-card">
+      <h4>🪶 绿色 zip（精简）</h4>
+      <p><code>*-win-x64-no-runtime.zip</code> — 解压即用，需已装 <a href="https://dotnet.microsoft.com/download/dotnet/8.0" target="_blank">.NET 8</a>。</p>
+      <a class="btn btn-outline" href="https://github.com/chaojimct/clipboardx/releases">前往 Releases</a>
+    </div>
+    <div class="dl-card">
+      <h4>📦 绿色 zip（自包含）</h4>
+      <p><code>*-win-x64-self-contained.zip</code> — 解压即用，无需单独装 .NET。</p>
+      <a class="btn btn-primary" href="https://github.com/chaojimct/clipboardx/releases">前往 Releases</a>
     </div>
   </div>
+  <p class="section-sub" style="margin-top:28px;margin-bottom:0;font-size:.9rem">便携：exe 旁放置空文件 <code>ClipboardX.portable</code>，数据写入 <code>Data\</code>。检查更新会按当前产品名匹配对应 zip。</p>
 </section>
 
 <!-- footer -->
@@ -294,6 +312,7 @@ footer a{color:var(--subtext)}
   <p>
     <a href="https://github.com/chaojimct/clipboardx" target="_blank">GitHub</a> ·
     <a href="https://github.com/chaojimct/clipboardx/releases" target="_blank">Releases</a> ·
+    <a href="https://github.com/chaojimct/clipboardx/blob/master/docs/ClipboardX-Introduction.md" target="_blank">深度介绍</a> ·
     <a href="https://github.com/chaojimct/clipboardx/issues" target="_blank">反馈问题</a>
   </p>
   <p style="margin-top:8px">ClipboardX — 轻量、开源、不抢焦点</p>

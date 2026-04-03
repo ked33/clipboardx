@@ -24,7 +24,7 @@
    - **`ClipboardX-*-win-x64-no-runtime.zip`** — 解压即用，需已安装上述桌面运行时
    - **`ClipboardX-*-win-x64-self-contained.zip`** — 自带运行时，无需单独装 .NET
 2. 若用 zip：解压后运行 **`ClipboardX.exe`**。从临时目录启动时，程序会复制到 `%LocalAppData%\Programs\ClipboardX` 并可在「应用和功能」中卸载；托盘 **关于** 可查看版本与主页。
-3. **检查更新**：托盘右键 → **检查更新…**，对比 GitHub Releases；若有新版，会按当前是否使用共享运行时选择 **no-runtime** 或 **self-contained** 包，关闭程序后覆盖并重启。需可访问 GitHub（含 `api.github.com`）。**设置 → 剪贴板 → 启动时检查更新**（默认开）会在启动约 45 秒后静默查询；若有新版仅**托盘气泡**提示，同一发行版只提示一次，仍须手动「检查更新…」下载安装。
+3. **检查更新**：托盘右键 → **检查更新…**，从 GitHub Releases 按**当前程序名（完整版 / 剪裁版）**匹配对应 zip，并按本机是否使用共享运行时优选 **no-runtime** 或 **self-contained**；关闭程序后覆盖并重启。需可访问 GitHub（含 `api.github.com`）。**设置 → 剪贴板 → 启动时检查更新**（默认开）会在启动约 45 秒后静默查询；若有新版仅**托盘气泡**提示，同一发行版只提示一次，仍须手动「检查更新…」下载安装。
 
 ### SmartScreen「Windows 已保护你的电脑」
 
@@ -51,11 +51,12 @@
 
 ## 设置与托盘
 
-### 设置（两个选项卡）
+### 设置（选项卡）
 
 | 选项卡 | 内容 |
 |--------|------|
-| **常规** | 最大记录数；**呼出快捷键**；**文件对话框跳转键**；跳转列表弹出**延时**（0～10000 ms，0 为立即；延时内再按一次跳转键会直接跳当前预选项）；**Shell 注入跳转**开关；**点击后自动跳转**；外观**主题**、**弹出位置**（光标旁 / 鼠标旁）、**透明度**；**预览行数**；**面板主键**；**开机自启动**；**启动时检查更新**（静默查询、托盘气泡提示）；**点击外部隐藏**剪贴板面板；**清空所有历史**（快捷短语仍保留在 `settings.json`） |
+| **剪贴板** | 最大记录数；**呼出快捷键**；外观**主题**、**弹出位置**（光标旁 / 鼠标旁）、**透明度**；**预览行数**；**面板主键**；**开机自启动**；**启动时检查更新**；**点击外部隐藏**剪贴板面板；**清空所有历史**（快捷短语仍保留在 `settings.json`） |
+| **文件夹跳转** | **文件对话框跳转键**；跳转列表弹出**延时**（0～10000 ms；延时内再按一次跳转键会直接跳当前预选项）；**跳转列表跟随**；**多候选时弹出列表**；**对话框到前台自动执行**；**Shell 注入跳转**；**点击后自动跳转**；**切回时自动同步路径**（从资源管理器等切回已打开对话框时刷新候选并按设置自动跳转） |
 | **自定义文件对话框** | 针对内置识别为「无」的窗口：规则列表、删除、**运行探测向导**、**导入（合并 / 替换）**、**导出**；底部显示规则文件路径 |
 
 首次关闭设置时若点 **保存**，上述常规项写入 **`settings.json`**；自定义规则在导入/删除/向导成功时已写入 **`custom_file_dialogs.json`**，与是否点「保存」无关。
@@ -92,6 +93,7 @@
 | 多条候选、延时为 0 | **立即**弹列表 |
 | **点击后自动跳转**（设置默认开） | 对话框成为前台后，**第一次**在框内点左键即按列表**首条**路径跳转；**同一对话框窗口存活期内只自动跳一次**（关掉再开才再来），手动 **Ctrl+G** 不受影响 |
 | **对话框到前台自动执行** | 开启后，检测到「打开 / 保存」对话框成为前台时，无需按快捷键即自动采集路径并弹出跳转列表（多候选）或直跳（单候选）。跳转列表紧贴对话框并随窗口移动，同一对话框顶层窗口只自动处理一次。可在设置中关闭 |
+| **切回时自动同步路径**（设置项，默认可关） | 从外部文件管理器切回**已打开**的文件对话框时刷新候选列表；开启后若最近一次外部文件夹与对话框当前目录不同则自动跳转（与「到前台自动执行」分工：后者偏首次到前台，本项偏反复切回） |
 
 **路径来源（摘录）：** 资源管理器；**Total Commander / XYplorer / Directory Opus**（与 [QuickSwitch](https://github.com/gepruts/QuickSwitch) 同类专用通道）；以及 FreeCommander、Double Commander、Q-Dir、OneCommander 等**白名单进程**上的**浅层 UI 自动化**（无官方 API 时尽力而为，多栏/四格可能只取扫描到的一条路径）；另含**记忆的上次路径**、列表**收藏**。无任何路径则本次按键无效——可先在外部管理器进到目标目录再试。
 
@@ -161,14 +163,18 @@
 
 ## 数据与日志
 
+默认数据根目录为 **`%LocalAppData%\ClipboardX\`**（与 `AppPaths` 一致）。**便携模式**：在 exe 同目录放置空文件 **`ClipboardX.portable`**，则配置与数据库落在 **`exe\Data\`** 下。
+
 | 位置 | 说明 |
 |------|------|
-| `%AppData%\ClipboardX\settings.json` | 热键、主题、自启动、**启动时检查更新**、最大条数、快捷短语、**文件夹收藏**、Shell 注入开关等（含内部字段 `LastStartupUpdateNotifiedTag`，用于同一版本只气泡一次） |
-| `%AppData%\ClipboardX\custom_file_dialogs.json` | **自定义文件对话框**规则（与设置中导入/导出格式一致） |
+| `%LocalAppData%\ClipboardX\settings.json` | 热键、主题、自启动、**启动时检查更新**、最大条数、快捷短语、**文件夹收藏**、文件跳转相关开关等（含 `LastStartupUpdateNotifiedTag`，用于同一版本只气泡一次） |
+| `%LocalAppData%\ClipboardX\custom_file_dialogs.json` | **自定义文件对话框**规则（与设置中导入/导出格式一致） |
 | `%LocalAppData%\ClipboardX\clipboard_history.db` | SQLite：**剪贴板历史**正文（WAL 模式） |
 | `%LocalAppData%\ClipboardX\shell_navigate.log` | **Shell 注入**与相关跳转诊断（UTF-8） |
 
-曾使用旧名称 **ClipboardManager** 的用户：首次启动时若存在 `%AppData%\ClipboardManager\settings.json`，会迁移到上述 **ClipboardX** 目录。
+**迁移**：若曾使用 **`%AppData%\ClipboardX`** 或旧名 **`%AppData%\ClipboardManager`** 的配置，首次启动会在目标文件不存在时尝试复制到当前数据根（详见 `AppPaths.MigrateLegacyPaths`）。
+
+**多 Flavor**：仅剪贴板 / 仅文件跳转版本的目录名为 `ClipboardX-clipboard`、`ClipboardX-filejump`（同样在 LocalAppData 下，或为便携 `Data\`）。
 
 ## 从源码运行
 
@@ -229,7 +235,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
   -p:IncludeAllContentForSelfExtract=true -o ./out/jump
 ```
 
-单文件会把内嵌 DLL 解压到临时目录；运行时通过 `AppContext.BaseDirectory` 加载 **`ClipboardXShellNavigate*.dll`**。打 **`v*`** 标签推送后，Actions 会构建并上传 Releases。
+单文件会把内嵌 DLL 解压到临时目录；运行时通过 `AppContext.BaseDirectory` 加载 **`ClipboardXShellNavigate*.dll`**。推送 **`v*`** 标签后，CI 会为 **Full / ClipboardOnly / FileJumpOnly** 各产出 **no-runtime** 与 **self-contained** zip，完整版另含 **两种 Inno 安装包**（`setup` 与 `setup-self-contained`，见上文「下载与安装」）。
 
 ## 环境与要求
 
@@ -251,6 +257,11 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 完整历史见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**，以下摘录主要变更。
+
+### v1.2.1
+
+- **构建**：修复 `FileJumpOnly` 剪裁版因排除 Sqlite 包导致 CI 发布失败；Release 矩阵关闭 **`fail-fast`**，避免某一 Flavor 先失败时正在执行的其他矩阵任务被一并取消
+- **FileJumpOnly 运行时**：无剪贴板 Flavor 下不再注册剪贴板全局热键、不处理 `WM_CLIPBOARDUPDATE` / 剪贴板呼出热键，避免误占热键
 
 ### v1.2.0
 

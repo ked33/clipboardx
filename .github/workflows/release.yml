@@ -12,6 +12,7 @@ jobs:
       contents: write
 
     strategy:
+      fail-fast: false
       matrix:
         flavor: [Full, ClipboardOnly, FileJumpOnly]
         include:

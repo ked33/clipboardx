@@ -228,6 +228,7 @@ public partial class PopupWindow : Window
 #endif
     }
 
+#if CLIPX_CLIPBOARD
     public bool UpdateHotkey(uint modifiers, uint key)
     {
         Win32.UnregisterHotKey(_hwnd, HotkeyId);
@@ -240,6 +241,9 @@ public partial class PopupWindow : Window
         _hotkeyKey = key;
         return true;
     }
+#else
+    public bool UpdateHotkey(uint modifiers, uint key) => true;
+#endif
 
     public bool UpdateFileJumpHotkey(uint modifiers, uint key)
     {
@@ -274,6 +278,7 @@ public partial class PopupWindow : Window
             DisarmFileJumpClickToNavigate();
         }
 
+#if CLIPX_CLIPBOARD
         if (settings.HotkeyModifiers != _hotkeyModifiers || settings.HotkeyKey != _hotkeyKey)
         {
             if (!UpdateHotkey(settings.HotkeyModifiers, settings.HotkeyKey))
@@ -285,6 +290,7 @@ public partial class PopupWindow : Window
                 settings.HotkeyKey = _hotkeyKey;
             }
         }
+#endif
 
         if (settings.FileJumpHotkeyModifiers != _fileJumpHotkeyModifiers
             || settings.FileJumpHotkeyKey != _fileJumpHotkeyKey)
@@ -302,9 +308,11 @@ public partial class PopupWindow : Window
 
     public void ClearHistory()
     {
+#if CLIPX_CLIPBOARD
         _historyStore.DeleteAll();
         _allItems.RemoveAll(x => !x.IsQuickPaste);
         RefreshFilter();
+#endif
     }
 
     #region Quick Paste Management
@@ -459,17 +467,21 @@ public partial class PopupWindow : Window
                 }
                 break;
 
+#if CLIPX_CLIPBOARD
             case Win32.WM_CLIPBOARDUPDATE:
                 OnClipboardUpdate();
                 handled = true;
                 break;
+#endif
             case Win32.WM_HOTKEY:
                 switch (wParam.ToInt32())
                 {
+#if CLIPX_CLIPBOARD
                     case HotkeyId:
                         TogglePopup();
                         handled = true;
                         break;
+#endif
                     case HotkeyJumpLastFolderId:
                         TryJumpFileDialogToLastFolder();
                         handled = true;

@@ -132,6 +132,7 @@ ClipboardX 对 WPS 实现了六重降级：`ValuePattern.SetValue` → `ComboBox
 | **Z 序推测** | 根据窗口 Z 序自动推断目标路径 | 有类似机制 | 不支持 |
 | **首次点击自动跳** | 对话框打开后第一次点击即跳转 | 不支持 | 不支持 |
 | **对话框到前台自动执行** | 检测到对话框到前台即自动弹列表/直跳，无需按键 | 有类似能力 | 不支持 |
+| **切回时自动同步路径**（可关） | 从资源管理器等切回已打开对话框时刷新候选；可选自动跳到最近一次外部文件夹 | 视版本而定 | 一般无 |
 | **路径收藏** | 支持，在跳转列表中管理 | 支持 | 逍遥快跳支持 |
 | **记忆上次路径** | 自动记录每次对话框的目录 | 支持 | 部分支持 |
 
@@ -152,7 +153,7 @@ ClipboardX 对 WPS 实现了六重降级：`ValuePattern.SetValue` → `ComboBox
 
 这不是简单的功能堆叠。剪贴板面板和跳转选择器共用同一套弹窗样式、同一套键盘钩子架构、同一个主题引擎、同一个设置窗口。架构上的复用使得「二合一」的资源占用显著低于「两个独立工具」。
 
-整个项目只有 3 个 NuGet 依赖（SQLite、NPinyin、Svg），没有 Electron，没有 WebView，是纯粹的原生 Windows 应用。
+**完整版**主工程仅 3 个 NuGet 依赖（SQLite、NPinyin、Svg），没有 Electron，没有 WebView，是纯粹的原生 Windows 应用。发行还提供**仅剪贴板**、**仅文件跳转**等剪裁构建（见 Releases 资产名前缀），按需下载即可。
 
 ---
 
@@ -171,13 +172,26 @@ ClipboardX 对 WPS 实现了六重降级：`ValuePattern.SetValue` → `ComboBox
 
 **GitHub 仓库**：[https://github.com/chaojimct/clipboardx](https://github.com/chaojimct/clipboardx)
 
-**下载最新版**：[Releases 页面](https://github.com/chaojimct/clipboardx/releases)
+**下载最新版**：[Releases 页面](https://github.com/chaojimct/clipboardx/releases)（版本号以发布页为准，下列文件名中的 `*` 为版本号）
 
-提供两种分发包：
+### 安装包（推荐完整版用户）
 
-| 包类型 | 说明 |
-|--------|------|
-| `ClipboardX-*-win-x64-no-runtime.zip` | 体积小，需已安装 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| `ClipboardX-*-win-x64-self-contained.zip` | 自带运行时，解压即用 |
+| 资产名模式 | 说明 |
+|------------|------|
+| `ClipboardX-*-setup.exe` | **Inno · 框架依赖**：安装包较小；需本机 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（x64）。未检测到时安装向导可打开官方下载页，安装运行后再执行 setup。 |
+| `ClipboardX-*-setup-self-contained.exe` | **Inno · 自包含**：体积较大，**无需**单独装 .NET；带开始菜单、卸载项，与自包含 zip 等价。 |
 
-支持 Windows 10 / 11，解压后运行 `ClipboardX.exe` 即可。托盘右键可检查更新、查看版本信息。
+### 绿色 zip（任意目录解压）
+
+| 资产名模式 | 说明 |
+|------------|------|
+| `ClipboardX-*-win-x64-no-runtime.zip` | 完整版单文件，体积小，需已装 **.NET 8 桌面运行时**。 |
+| `ClipboardX-*-win-x64-self-contained.zip` | 完整版单文件，自带运行时。 |
+| `ClipboardX-clipboard-*-win-x64-*.zip` | **仅剪贴板**（无文件跳转）。 |
+| `ClipboardX-filejump-*-win-x64-*.zip` | **仅文件对话框跳转**（无剪贴板历史）。 |
+
+「检查更新」会按**当前 exe 对应的产品前缀**选择上述 zip，避免多资产并存时误下其它变体。
+
+**系统**：Windows 10 / 11 x64。解压包主文件名为 `ClipboardX.exe`（完整版）或 `ClipboardX-clipboard.exe` / `ClipboardX-filejump.exe`（剪裁版）。exe 旁放置空文件 **`ClipboardX.portable`** 可启用便携数据目录（`Data\`）。详见仓库根目录 **README** 中「数据与日志」。
+
+托盘右键可**检查更新**、查看关于信息；若使用共享运行时，更新会优先匹配较小的 no-runtime 包。
