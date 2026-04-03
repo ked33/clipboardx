@@ -94,6 +94,15 @@ jobs:
           Compress-Archive -Path 'publish/fdd/*' -DestinationPath "ClipboardX-$v-win-x64-no-runtime.zip" -Force
           Compress-Archive -Path 'publish/sc/*' -DestinationPath "ClipboardX-$v-win-x64-self-contained.zip" -Force
 
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$v /DPublishDir=..\publish\sc installer\clipboardx.iss
+          $setup = "installer\Output\ClipboardX-$v-setup.exe"
+          if (-not (Test-Path $setup)) { throw "Missing $setup" }
+          Copy-Item $setup "ClipboardX-$v-setup.exe"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -101,5 +110,6 @@ jobs:
           files: |
             ClipboardX-${{ steps.ver.outputs.version }}-win-x64-no-runtime.zip
             ClipboardX-${{ steps.ver.outputs.version }}-win-x64-self-contained.zip
+            ClipboardX-${{ steps.ver.outputs.version }}-setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
