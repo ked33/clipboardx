@@ -258,6 +258,10 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 完整历史见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**，以下摘录主要变更。
 
+### v1.2.2
+
+- **安装包 / CI**：Inno 简体中文语言文件改为与 `installer\clipboardx.iss` 同目录随仓库分发（`ChineseSimplified.isl`，来源 jrsoftware/issrc），避免 GitHub Actions 上自带 Inno 未附带 `Languages\ChineseSimplified.isl` 导致编译失败
+
 ### v1.2.1
 
 - **构建**：修复 `FileJumpOnly` 剪裁版因排除 Sqlite 包导致 CI 发布失败；Release 矩阵关闭 **`fail-fast`**，避免某一 Flavor 先失败时正在执行的其他矩阵任务被一并取消

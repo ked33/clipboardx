@@ -40,7 +40,8 @@ CloseApplications=force
 RestartApplications=no
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; CI/GitHub Actions 自带 Inno 常不含 Languages\ChineseSimplified.isl，故与脚本同目录随仓库分发（来源：jrsoftware/issrc Unofficial）
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
