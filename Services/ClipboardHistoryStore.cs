@@ -9,9 +9,8 @@ namespace ClipboardManager;
 /// </summary>
 internal sealed class ClipboardHistoryStore
 {
-    private static readonly string DbDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipboardX");
-    private static readonly string DbPath = Path.Combine(DbDir, "clipboard_history.db");
+    private static string DbDir => Path.GetDirectoryName(AppPaths.SqliteDbFile)!;
+    private static string DbPath => AppPaths.SqliteDbFile;
 
     private static string ConnectionString => new SqliteConnectionStringBuilder
     {

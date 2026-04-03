@@ -98,11 +98,9 @@ public class AppSettings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "ClipboardManager");
 
-    private static readonly string SettingsDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "ClipboardX");
+    private static string SettingsDir => Path.GetDirectoryName(AppPaths.SettingsFile)!;
 
-    private static readonly string SettingsFile = Path.Combine(SettingsDir, "settings.json");
+    private static string SettingsFile => AppPaths.SettingsFile;
     private static readonly string LegacySettingsFile = Path.Combine(LegacySettingsDir, "settings.json");
 
     public static AppSettings Load()

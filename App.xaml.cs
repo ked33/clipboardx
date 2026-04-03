@@ -85,6 +85,8 @@ public partial class App : Application
         RegisterProbingAssemblyResolve();
         base.OnStartup(e);
 
+        AppPaths.Initialize();
+
         // WinForms 托盘/上下文菜单在 WPF 宿主中更稳妥
         WinForms.Application.EnableVisualStyles();
         WinForms.Application.SetCompatibleTextRenderingDefault(false);

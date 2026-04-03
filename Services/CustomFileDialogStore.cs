@@ -29,10 +29,7 @@ internal static class CustomFileDialogStore
         WriteIndented = true,
     };
 
-    private static readonly string StoreFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "ClipboardX",
-        "custom_file_dialogs.json");
+    private static string StoreFile => AppPaths.CustomDialogsFile;
 
     private static List<CustomFileDialogRule>? _rules;
     private static readonly object Sync = new();

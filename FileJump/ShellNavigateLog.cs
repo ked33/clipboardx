@@ -11,11 +11,7 @@ internal static class ShellNavigateLog
     private static readonly object Gate = new();
     private static readonly int MaxBytesBeforeTrim = 2_000_000;
 
-    public static string LogFilePath =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ClipboardX",
-            "shell_navigate.log");
+    public static string LogFilePath => AppPaths.ShellNavigateLogFile;
 
     public static void Write(string source, string message)
     {

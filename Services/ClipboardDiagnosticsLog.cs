@@ -11,11 +11,7 @@ internal static class ClipboardDiagnosticsLog
     private static readonly object Gate = new();
     private static readonly int MaxBytesBeforeTrim = 2_000_000;
 
-    public static string LogFilePath =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ClipboardX",
-            "clipboard_diagnostics.log");
+    public static string LogFilePath => AppPaths.ClipboardDiagnosticsLogFile;
 
     public static void Write(string message)
     {
