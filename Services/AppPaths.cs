@@ -11,8 +11,21 @@ namespace ClipboardManager;
 /// </summary>
 internal static class AppPaths
 {
-    private const string ProductName = "ClipboardX";
     private const string PortableSentinel = "ClipboardX.portable";
+
+#if CLIPX_FULL
+    private const string ProductDirName = "ClipboardX";
+    public const string MutexName = "ClipboardX_F7A2E9B0";
+#elif CLIPX_CLIPBOARD
+    private const string ProductDirName = "ClipboardX-clipboard";
+    public const string MutexName = "ClipboardX_Clipboard_A1B2C3D4";
+#elif CLIPX_FILEJUMP
+    private const string ProductDirName = "ClipboardX-filejump";
+    public const string MutexName = "ClipboardX_FileJump_E5F6G7H8";
+#else
+    private const string ProductDirName = "ClipboardX";
+    public const string MutexName = "ClipboardX_F7A2E9B0";
+#endif
 
     private static string? _dataRoot;
     private static bool _isPortable;
@@ -33,7 +46,7 @@ internal static class AppPaths
     /// 旧版 settings.json 所在目录（%AppData%\ClipboardX），迁移用。
     /// </summary>
     public static string LegacyRoamingDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ProductName);
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipboardX");
 
     /// <summary>
     /// 更早期的旧版目录（%AppData%\ClipboardManager），迁移用。
@@ -71,7 +84,7 @@ internal static class AppPaths
             _isPortable = false;
             _dataRoot = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                ProductName);
+                ProductDirName);
         }
 
         Directory.CreateDirectory(_dataRoot);

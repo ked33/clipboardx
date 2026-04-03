@@ -103,7 +103,7 @@ public partial class App : Application
             return;
         }
 
-        _mutex = new Mutex(true, "ClipboardX_F7A2E9B0", out bool isNew);
+        _mutex = new Mutex(true, AppPaths.MutexName, out bool isNew);
         if (!isNew)
         {
 #if DEBUG
