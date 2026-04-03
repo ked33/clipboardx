@@ -517,7 +517,11 @@ public partial class PopupWindow : Window
             return;
         }
         if (ClipboardGate.IsActive) return;
-        if (_pasteInProgress) return;
+        if (_pasteInProgress)
+        {
+            ClipboardDiagnosticsLog.Write("monitor skip pasteInProgress (post-paste echo suppressed)");
+            return;
+        }
 
         try
         {
@@ -2188,6 +2192,11 @@ public partial class PopupWindow : Window
             var prePasteDelayMs = item.Type == EntryType.Image ? 85 : 45;
             await Task.Delay(prePasteDelayMs);
             SendCtrlV();
+            // Excel/WPS 等 OLE 应用在处理粘贴后可能调用 EmptyClipboard 或触发延迟渲染，
+            // 产生的 WM_CLIPBOARDUPDATE 不应被识别为新的剪贴板内容。
+            // 保持 _pasteInProgress 以抑制这些粘贴后「回波」。
+            await Task.Delay(600);
+            ClipboardDiagnosticsLog.Write("paste post-echo suppression window elapsed");
         }
         }
         finally
@@ -2196,13 +2205,14 @@ public partial class PopupWindow : Window
         }
     }
 
+    // Shift+Insert 是系统级粘贴，不会被应用层快捷键映射拦截，兼容性优于 Ctrl+V
     private static void SendCtrlV()
     {
         var inputs = new Win32.INPUT[4];
-        inputs[0].type = Win32.INPUT_KEYBOARD; inputs[0].u.ki.wVk = Win32.VK_CONTROL;
-        inputs[1].type = Win32.INPUT_KEYBOARD; inputs[1].u.ki.wVk = Win32.VK_V;
-        inputs[2].type = Win32.INPUT_KEYBOARD; inputs[2].u.ki.wVk = Win32.VK_V; inputs[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-        inputs[3].type = Win32.INPUT_KEYBOARD; inputs[3].u.ki.wVk = Win32.VK_CONTROL; inputs[3].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        inputs[0].type = Win32.INPUT_KEYBOARD; inputs[0].u.ki.wVk = Win32.VK_SHIFT;
+        inputs[1].type = Win32.INPUT_KEYBOARD; inputs[1].u.ki.wVk = Win32.VK_INSERT;
+        inputs[2].type = Win32.INPUT_KEYBOARD; inputs[2].u.ki.wVk = Win32.VK_INSERT; inputs[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        inputs[3].type = Win32.INPUT_KEYBOARD; inputs[3].u.ki.wVk = Win32.VK_SHIFT; inputs[3].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
         Win32.SendInput(4, inputs, Marshal.SizeOf<Win32.INPUT>());
     }
 
@@ -2280,6 +2290,8 @@ public partial class PopupWindow : Window
         {
             await Task.Delay(60);
             SendCtrlV();
+            await Task.Delay(600);
+            ClipboardDiagnosticsLog.Write("pasteAsFile post-echo suppression window elapsed");
         }
         }
         finally

@@ -46,6 +46,7 @@ internal static class Win32
     public const uint VK_DELETE = 0x2E;
     public const uint VK_OEM_3 = 0xC0;
     public const ushort VK_SHIFT = 0x10;
+    public const ushort VK_INSERT = 0x2D;
     public const ushort VK_MENU = 0x12;
     public const ushort VK_LWIN = 0x5B;
     public const ushort VK_RWIN = 0x5C;
