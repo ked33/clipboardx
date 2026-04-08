@@ -4,21 +4,22 @@
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <BooleanToVisibilityConverter x:Key="BoolVis"/>
-        <!-- Default dark theme (overwritten at runtime by ThemeManager) -->
-        <SolidColorBrush x:Key="PopupBgBrush" Color="#F21E1E2E"/>
-        <SolidColorBrush x:Key="WindowBgBrush" Color="#1E1E2E"/>
-        <SolidColorBrush x:Key="SurfaceBrush" Color="#313244"/>
-        <SolidColorBrush x:Key="HoverBrush" Color="#313244"/>
-        <SolidColorBrush x:Key="SelectedBrush" Color="#45475A"/>
-        <SolidColorBrush x:Key="FooterBrush" Color="#181825"/>
-        <SolidColorBrush x:Key="PrimaryText" Color="#CDD6F4"/>
-        <SolidColorBrush x:Key="SecondaryText" Color="#6C7086"/>
-        <SolidColorBrush x:Key="MutedText" Color="#585B70"/>
-        <SolidColorBrush x:Key="HintText" Color="#7F849C"/>
-        <SolidColorBrush x:Key="AccentBg" Color="#89B4FA"/>
-        <SolidColorBrush x:Key="AccentFg" Color="#1E1E2E"/>
-        <SolidColorBrush x:Key="ThemeBorder" Color="#585B70"/>
-        <SolidColorBrush x:Key="ThemeSeparator" Color="#313244"/>
-        <SolidColorBrush x:Key="DangerBg" Color="#F38BA8"/>
+        <!-- Default dark：与 ThemeManager 中 VS Code Dark+ 近似色一致（启动后仍会覆盖） -->
+        <SolidColorBrush x:Key="PopupBgBrush" Color="#F21E1E1E"/>
+        <SolidColorBrush x:Key="WindowBgBrush" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="SurfaceBrush" Color="#252526"/>
+        <!-- 与 ThemeManager 暗色 MixBrandOnDarkBg(7,18)、(12,13) 一致 -->
+        <SolidColorBrush x:Key="HoverBrush" Color="#1B3F3F"/>
+        <SolidColorBrush x:Key="SelectedBrush" Color="#245756"/>
+        <SolidColorBrush x:Key="FooterBrush" Color="#252526"/>
+        <SolidColorBrush x:Key="PrimaryText" Color="#CCCCCC"/>
+        <SolidColorBrush x:Key="SecondaryText" Color="#9D9D9D"/>
+        <SolidColorBrush x:Key="MutedText" Color="#858585"/>
+        <SolidColorBrush x:Key="HintText" Color="#A0A0A0"/>
+        <SolidColorBrush x:Key="AccentBg" Color="#139493"/>
+        <SolidColorBrush x:Key="AccentFg" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="ThemeBorder" Color="#3E3E42"/>
+        <SolidColorBrush x:Key="ThemeSeparator" Color="#3E3E42"/>
+        <SolidColorBrush x:Key="DangerBg" Color="#F48771"/>
     </Application.Resources>
 </Application>

@@ -35,11 +35,17 @@ internal static class Win32
     public const uint KEYEVENTF_KEYUP = 0x0002;
     public const uint KEYEVENTF_UNICODE = 0x0004;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    /// <summary><see cref="KBDLLHOOKSTRUCT.flags"/>：按键由 SendInput 等注入。</summary>
+    public const uint LLKHF_INJECTED = 0x10;
+    public const uint LLKHF_LOWER_IL_INJECTED = 0x02;
     public const ushort VK_CONTROL = 0x11;
     public const ushort VK_V = 0x56;
     public const ushort VK_L = 0x4C;
     public const ushort VK_A = 0x41;
     public const ushort VK_G = 0x47;
+    public const ushort VK_Q = 0x51;
+    /// <summary>Keyboard「/ ?」键（US），RegisterHotKey 与 <see cref="AppSettings.BatchModeCycleHotkeyKey"/> 等使用。</summary>
+    public const ushort VK_OEM_2 = 0xBF;
     public const uint VK_BACK = 0x08;
     public const uint VK_UP = 0x26;
     public const uint VK_DOWN = 0x28;

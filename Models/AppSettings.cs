@@ -68,6 +68,18 @@ public class AppSettings
     public string? LastStartupUpdateNotifiedTag { get; set; }
     public int PreviewMaxLines { get; set; } = 2;
     public string PanelModifierKey { get; set; } = "Ctrl";
+
+    /// <summary>批量粘贴：Off / Fifo / Lifo（与 <see cref="BatchPasteQueueMode"/> 枚举名一致）。</summary>
+    public string BatchPasteMode { get; set; } = nameof(BatchPasteQueueMode.Off);
+
+    /// <summary>面板未打开时也可用的「批量模式」循环切换快捷键（默认 Alt+/）。须与其它全局热键不同。</summary>
+    public uint BatchModeCycleHotkeyModifiers { get; set; } = Win32.MOD_ALT;
+
+    public uint BatchModeCycleHotkeyKey { get; set; } = Win32.VK_OEM_2;
+
+    /// <summary>多选且条目全部为文本时，是否拼成一段一次写入剪贴板并粘贴（关则逐条粘贴，便于多步撤销）。</summary>
+    public bool BatchPasteMergeText { get; set; } = true;
+
     public List<QuickPasteEntry> QuickPastes { get; set; } = new();
 
     /// <summary>Ctrl+G 跳转列表顶部展示的收藏目录（Phrase 为关键词/别名，供检索）。</summary>
@@ -79,6 +91,8 @@ public class AppSettings
     public string HotkeyDisplayName => FormatHotkey(HotkeyModifiers, HotkeyKey);
 
     public string FileJumpHotkeyDisplayName => FormatHotkey(FileJumpHotkeyModifiers, FileJumpHotkeyKey);
+
+    public string BatchModeCycleHotkeyDisplayName => FormatHotkey(BatchModeCycleHotkeyModifiers, BatchModeCycleHotkeyKey);
 
     public static string FormatHotkey(uint modifiers, uint key)
     {
@@ -145,6 +159,8 @@ public class AppSettings
                         settings.FileJumpAutoSyncOnReturn = true;
                     if (!doc.RootElement.TryGetProperty(nameof(CheckUpdatesOnStartup), out _))
                         settings.CheckUpdatesOnStartup = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(BatchPasteMergeText), out _))
+                        settings.BatchPasteMergeText = true;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     return settings;
@@ -180,6 +196,8 @@ public class AppSettings
                         settings.FileJumpAutoSyncOnReturn = true;
                     if (!doc.RootElement.TryGetProperty(nameof(CheckUpdatesOnStartup), out _))
                         settings.CheckUpdatesOnStartup = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(BatchPasteMergeText), out _))
+                        settings.BatchPasteMergeText = true;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     settings.Save();
@@ -225,6 +243,10 @@ public class AppSettings
         LastStartupUpdateNotifiedTag = LastStartupUpdateNotifiedTag,
         PreviewMaxLines = PreviewMaxLines,
         PanelModifierKey = PanelModifierKey,
+        BatchPasteMode = BatchPasteMode,
+        BatchModeCycleHotkeyModifiers = BatchModeCycleHotkeyModifiers,
+        BatchModeCycleHotkeyKey = BatchModeCycleHotkeyKey,
+        BatchPasteMergeText = BatchPasteMergeText,
         QuickPastes = QuickPastes.Select(q => new QuickPasteEntry { Phrase = q.Phrase, Content = q.Content }).ToList(),
         FolderFavorites = FolderFavorites.Select(f => new FolderFavoriteEntry { Phrase = f.Phrase, Path = f.Path }).ToList(),
         LastFileDialogFolder = LastFileDialogFolder

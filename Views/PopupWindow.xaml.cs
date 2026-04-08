@@ -30,6 +30,23 @@ public partial class PopupWindow : Window
     private readonly List<ClipboardEntry> _allItems = new();
     private readonly ObservableCollection<ClipboardEntry> _displayItems = new();
 
+    /// <summary>FIFO/LIFO 下：多选 Enter 入队、新复制可自动入队；出队后条目不占批量角标，回到底部列表排序。</summary>
+    private readonly List<ClipboardEntry> _batchQueue = new();
+#if CLIPX_CLIPBOARD
+    /// <summary>全局 Ctrl+V / Shift+Insert 松键出队防抖（毫秒，TickCount64）。</summary>
+    private long _lastGlobalPasteQueueAdvanceTick;
+    /// <summary>序列化「队列队首 → 剪贴板」写入，避免与监控钩交错或多路 TryPush 争用 OpenClipboard。</summary>
+    private readonly SemaphoreSlim _queueClipboardPushLock = new(1, 1);
+#endif
+    /// <summary>Shift+↑↓ 区间选择的固定锚点（_displayItems 索引，-1 表示未激活）。</summary>
+    private int _selectionRangeAnchor = -1;
+    /// <summary>Shift+↑↓ 区间选择的移动端（_displayItems 索引）。</summary>
+    private int _selectionCursorEnd = -1;
+    /// <summary>鼠标 Shift+点击划范围的锚点（最后一次非 Shift 左击行索引，-1 表示未建立）。</summary>
+    private int _mouseShiftAnchorIndex = -1;
+    private readonly List<(Border Row, Action Activate)> _batchMenuNav = new();
+    private int _batchNavIndex;
+
     private IntPtr _hwnd;
     private IntPtr _targetWindow;
     private IntPtr _keyboardHook;
@@ -60,6 +77,8 @@ public partial class PopupWindow : Window
     private bool _isSettingClipboard;
     /// <summary>从历史粘贴整段流程中：禁止监控线程读剪贴板，避免 Contains/Get 与即将执行的 Set 在同 UI 线程上交错 OpenClipboard。</summary>
     private bool _pasteInProgress;
+    /// <summary>连续粘贴多段（批量/队列）时保持 true，整轮结束后才清除 <see cref="_pasteInProgress"/>，避免段间剪贴板回波或 FIFO 自动入队插队。</summary>
+    private bool _sequentialPasteHold;
     private bool _isPopupVisible;
     private string _searchText = "";
     private EntryType? _typeFilter;
@@ -143,6 +162,9 @@ public partial class PopupWindow : Window
 
     public event Action? SettingsRequested;
 
+    /// <summary>批量模式（普通 / LIFO / FIFO）切换后通知，用于托盘图标等。</summary>
+    public event EventHandler? BatchPasteModeChanged;
+
     public PopupWindow()
     {
         InitializeComponent();
@@ -211,6 +233,7 @@ public partial class PopupWindow : Window
         InstallForegroundWatcher();
 #endif
         UpdateEmptyState();
+        UpdateBatchHeaderUi();
     }
 
     public void Cleanup()
@@ -279,7 +302,7 @@ public partial class PopupWindow : Window
         Opacity = _popupOpacity;
         _quickPastes = settings.QuickPastes;
         TrimItems();
-        UpdateFooterHints();
+        UpdateBatchHeaderUi();
 
         if (!settings.FileJumpAutoOnFirstClick)
         {
@@ -313,6 +336,8 @@ public partial class PopupWindow : Window
                 settings.FileJumpHotkeyKey = _fileJumpHotkeyKey;
             }
         }
+
+        UpdateFooterHints();
     }
 
     public void ClearHistory()
@@ -320,7 +345,10 @@ public partial class PopupWindow : Window
 #if CLIPX_CLIPBOARD
         _historyStore.DeleteAll();
         _allItems.RemoveAll(x => !x.IsQuickPaste);
+        _batchQueue.Clear();
+        UpdateBatchOrderProperties();
         RefreshFilter();
+        SyncBatchPasteKeyboardHook();
 #endif
     }
 
@@ -565,9 +593,9 @@ public partial class PopupWindow : Window
 
     private void OnClipboardUpdate()
     {
+        // 仅跳过：不得在 async Set 尚未收尾时清 _isSettingClipboard，否则下一条 WM_CLIPBOARDUPDATE 会当作用户复制 → AutoBatchEnqueue → TryPush 风暴与 CLIPBRD_E 重试卡顿。
         if (_isSettingClipboard)
         {
-            _isSettingClipboard = false;
             ClipboardDiagnosticsLog.Write("monitor skip self_set");
             return;
         }
@@ -592,6 +620,7 @@ public partial class PopupWindow : Window
                     _allItems.Insert(0, fe);
                     TrimItems();
                     _historyStore.TryInsert(fe);
+                    AutoBatchEnqueueIfNeeded(fe);
                     RefreshFilter();
                     return;
                 }
@@ -607,6 +636,7 @@ public partial class PopupWindow : Window
                     _allItems.Insert(0, te);
                     TrimItems();
                     _historyStore.TryInsert(te);
+                    AutoBatchEnqueueIfNeeded(te);
                     RefreshFilter();
                     return;
                 }
@@ -651,6 +681,7 @@ public partial class PopupWindow : Window
                             _allItems.Insert(0, ie);
                             TrimItems();
                             _historyStore.TryInsert(ie);
+                            AutoBatchEnqueueIfNeeded(ie);
                             RefreshFilter();
                             ClipboardDiagnosticsLog.Write($"monitor history inserted image outBytes={pngData.Length}");
                         }
@@ -694,6 +725,8 @@ public partial class PopupWindow : Window
         foreach (var x in _allItems.Where(x => x.Type == EntryType.Text && !x.IsQuickPaste && x.TextContent == text))
             _historyStore.TryDelete(x.PersistedId);
         _allItems.RemoveAll(x => x.Type == EntryType.Text && !x.IsQuickPaste && x.TextContent == text);
+        // 一次复制常连发多条 WM_CLIPBOARDUPDATE；旧条已从列表移除，若不清理队列会叠多条同内容角标
+        _batchQueue.RemoveAll(x => x.Type == EntryType.Text && !x.IsQuickPaste && x.TextContent == text);
     }
 
     private void DeduplicateFiles(string[] paths)
@@ -702,6 +735,7 @@ public partial class PopupWindow : Window
         foreach (var x in _allItems.Where(x => x.Type == EntryType.Files && string.Join("|", x.FilePaths ?? []) == key))
             _historyStore.TryDelete(x.PersistedId);
         _allItems.RemoveAll(x => x.Type == EntryType.Files && string.Join("|", x.FilePaths ?? []) == key);
+        _batchQueue.RemoveAll(x => x.Type == EntryType.Files && string.Join("|", x.FilePaths ?? []) == key);
     }
 
     /// <summary>按 PNG 字节 MD5 去掉已有相同图片（含本程序粘贴触发的重复监控写入）。</summary>
@@ -713,6 +747,7 @@ public partial class PopupWindow : Window
         foreach (var x in _allItems.Where(x => x.Type == EntryType.Image && !x.IsQuickPaste && x.ImageContentMd5Hex == hex))
             _historyStore.TryDelete(x.PersistedId);
         _allItems.RemoveAll(x => x.Type == EntryType.Image && !x.IsQuickPaste && x.ImageContentMd5Hex == hex);
+        _batchQueue.RemoveAll(x => x.Type == EntryType.Image && !x.IsQuickPaste && x.ImageContentMd5Hex == hex);
     }
 
     private void TrimItems()
@@ -723,6 +758,7 @@ public partial class PopupWindow : Window
             var last = regular[^1];
             _historyStore.TryDelete(last.PersistedId);
             _allItems.Remove(last);
+            _batchQueue.Remove(last);
             regular.RemoveAt(regular.Count - 1);
         }
     }
@@ -754,12 +790,23 @@ public partial class PopupWindow : Window
         if (!string.IsNullOrEmpty(query))
             items = items.Where(i => i.MatchesSearch(query));
 
-        var sorted = items
+        var filtered = items.ToList();
+        var filteredSet = filtered.ToHashSet();
+        UpdateBatchOrderProperties();
+        var queuePart = _batchQueue.Where(e => filteredSet.Contains(e)).ToList();
+        var qset = new HashSet<ClipboardEntry>(_batchQueue);
+        var rest = filtered
+            .Where(e => !qset.Contains(e))
             .OrderByDescending(i => i.IsQuickPaste && !string.IsNullOrEmpty(_searchText))
             .ThenByDescending(i => i.CopiedAt);
 
         int idx = 1;
-        foreach (var item in sorted)
+        foreach (var item in queuePart)
+        {
+            item.DisplayIndex = idx++;
+            _displayItems.Add(item);
+        }
+        foreach (var item in rest)
         {
             item.DisplayIndex = idx++;
             _displayItems.Add(item);
@@ -772,6 +819,7 @@ public partial class PopupWindow : Window
                 ? Math.Clamp(preferSelectListIndex.Value, 0, _displayItems.Count - 1)
                 : 0;
             ItemsList.SelectedIndex = sel;
+            _mouseShiftAnchorIndex = sel;
             ItemsList.ScrollIntoView(ItemsList.SelectedItem);
         }
     }
@@ -807,6 +855,741 @@ public partial class PopupWindow : Window
 
     #endregion
 
+    #region Multi-paste batch queue
+
+    private BatchPasteQueueMode GetBatchMode()
+    {
+        if (_appSettings == null) return BatchPasteQueueMode.Off;
+        return Enum.TryParse<BatchPasteQueueMode>(_appSettings.BatchPasteMode, true, out var m)
+            ? m
+            : BatchPasteQueueMode.Off;
+    }
+
+    private void SetBatchPasteMode(BatchPasteQueueMode mode)
+    {
+        if (_appSettings == null) return;
+        var prev = GetBatchMode();
+        _appSettings.BatchPasteMode = mode.ToString();
+        if (mode == BatchPasteQueueMode.Off)
+            _batchQueue.Clear();
+        _appSettings.Save();
+        UpdateBatchHeaderUi();
+        UpdateBatchOrderProperties();
+        RefreshFilter();
+#if CLIPX_CLIPBOARD
+        SyncBatchPasteKeyboardHook();
+#endif
+        if (prev != mode)
+            BatchPasteModeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void UpdateBatchHeaderUi()
+    {
+        ApplyBatchModeChromeResources();
+        if (BatchModeHeaderText == null) return;
+        BatchModeHeaderText.Text = GetBatchMode() switch
+        {
+            BatchPasteQueueMode.Fifo => "FIFO",
+            BatchPasteQueueMode.Lifo => "LIFO",
+            _ => "普通"
+        };
+    }
+
+    /// <summary>顶栏模式 Tag、列表队列角标、列表选中/悬停与托盘图标共用 <see cref="TrayIconSvg"/> 模式主色。</summary>
+    private void ApplyBatchModeChromeResources()
+    {
+        var mode = GetBatchMode();
+        var fill = HexToFrozenBrush(TrayIconSvg.GetModeMainHex(mode));
+        Resources["BatchModeTagFill"] = fill;
+        Resources["BatchModeBadgeFill"] = fill;
+        Resources["BatchModeTagFg"] = System.Windows.Media.Brushes.White;
+        Resources["BatchModeBadgeFg"] = System.Windows.Media.Brushes.White;
+        ApplyListSelectionBrushesForMode(mode);
+    }
+
+    private void ApplyListSelectionBrushesForMode(BatchPasteQueueMode mode)
+    {
+        var (mr, mg, mb) = ParseHexRgb(TrayIconSvg.GetModeMainHex(mode));
+        if (IsDarkThemeEffective())
+        {
+            Resources["HoverBrush"] = MixRgbOnDarkEditor(mr, mg, mb, 7, 18);
+            Resources["SelectedBrush"] = MixRgbOnDarkEditor(mr, mg, mb, 12, 13);
+        }
+        else
+        {
+            Resources["HoverBrush"] = MixRgbOnLightWindow(mr, mg, mb, 5, 20);
+            Resources["SelectedBrush"] = MixRgbOnLightWindow(mr, mg, mb, 10, 15);
+        }
+    }
+
+    private bool IsDarkThemeEffective()
+    {
+        if (_appSettings == null) return ThemeManager.IsSystemDark();
+        return _appSettings.Theme switch
+        {
+            "Dark" => true,
+            "Light" => false,
+            _ => ThemeManager.IsSystemDark()
+        };
+    }
+
+    private static (byte R, byte G, byte B) ParseHexRgb(string hex)
+    {
+        hex = hex.TrimStart('#');
+        if (hex.Length != 6) return (0x13, 0x94, 0x93);
+        return (
+            Convert.ToByte(hex[..2], 16),
+            Convert.ToByte(hex[2..4], 16),
+            Convert.ToByte(hex[4..6], 16));
+    }
+
+    /// <summary>与 <see cref="ThemeManager"/> 暗色列表混合比例一致，仅前景换为当前模式主色。</summary>
+    private static SolidColorBrush MixRgbOnDarkEditor(byte r, byte g, byte b, int wFg, int wBg)
+    {
+        const byte bg = 0x1E;
+        return MixRgbOnSolid(r, g, b, bg, bg, bg, wFg, wBg);
+    }
+
+    /// <summary>亮色窗口底 <see cref="ThemeManager"/> 浅灰混模式主色。</summary>
+    private static SolidColorBrush MixRgbOnLightWindow(byte r, byte g, byte b, int wFg, int wBg)
+    {
+        return MixRgbOnSolid(r, g, b, 0xEF, 0xF1, 0xF5, wFg, wBg);
+    }
+
+    private static SolidColorBrush MixRgbOnSolid(
+        byte r, byte g, byte b,
+        byte bgR, byte bgG, byte bgB,
+        int wFg, int wBg)
+    {
+        var d = wFg + wBg;
+        if (d <= 0)
+            d = 1;
+        byte M(byte f, byte bg) => (byte)((f * (long)wFg + bg * (long)wBg) / d);
+        var brush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(M(r, bgR), M(g, bgG), M(b, bgB)));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static SolidColorBrush HexToFrozenBrush(string hex)
+    {
+        var c = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex)!;
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
+
+    /// <summary>顺序：普通（关队列）→ LIFO → FIFO → 普通。全局快捷键由 App 侧消息窗口注册，与顶栏左键相同。</summary>
+    public void CycleBatchPasteMode()
+    {
+        var next = GetBatchMode() switch
+        {
+            BatchPasteQueueMode.Off => BatchPasteQueueMode.Lifo,
+            BatchPasteQueueMode.Lifo => BatchPasteQueueMode.Fifo,
+            _ => BatchPasteQueueMode.Off
+        };
+        SetBatchPasteMode(next);
+    }
+
+    private void UpdateBatchOrderProperties()
+    {
+        foreach (var e in _allItems)
+            e.BatchOrder = 0;
+        int o = 1;
+        foreach (var e in _batchQueue)
+            e.BatchOrder = o++;
+    }
+
+    /// <summary>队列整体移到 <see cref="_allItems"/> 最前（与列表顶栏展示顺序一致）。</summary>
+    private void ReorderAllItemsQueueFirst()
+    {
+        if (_batchQueue.Count == 0) return;
+        var qset = new HashSet<ClipboardEntry>(_batchQueue);
+        var tail = _allItems.Where(e => !qset.Contains(e)).ToList();
+        _allItems.Clear();
+        foreach (var e in _batchQueue)
+            _allItems.Add(e);
+        foreach (var e in tail)
+            _allItems.Add(e);
+    }
+
+#if CLIPX_CLIPBOARD
+    /// <summary>面板显示或 FIFO/LIFO 且队列非空时需 WH_KEYBOARD_LL（隐藏面板时仅靠此项收全局粘贴键）。</summary>
+    private void SyncBatchPasteKeyboardHook()
+    {
+        var need = _isPopupVisible
+            || (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0);
+        if (need)
+            InstallKeyboardHook();
+        else
+            UninstallKeyboardHook();
+    }
+#else
+    private void SyncBatchPasteKeyboardHook() { }
+#endif
+
+#if CLIPX_CLIPBOARD
+    /// <summary>FIFO/LIFO：多选 Enter 入队（不立即粘贴），顶栏序号；目标应用内每次 Ctrl+V / Shift+Insert 松键出队并推进剪贴板。</summary>
+    private void EnqueueSelectedForBatchPasteMode()
+    {
+        var mode = GetBatchMode();
+        if (mode == BatchPasteQueueMode.Off) return;
+
+        var ordered = ItemsList.SelectedItems.Cast<ClipboardEntry>()
+            .Where(e => _displayItems.Contains(e))
+            .OrderBy(e => _displayItems.IndexOf(e))
+            .ToList();
+        if (ordered.Count == 0) return;
+
+        foreach (var e in ordered)
+        {
+            _batchQueue.Remove(e);
+            if (mode == BatchPasteQueueMode.Fifo)
+                _batchQueue.Add(e);
+            else
+                _batchQueue.Insert(0, e);
+        }
+        UpdateBatchOrderProperties();
+        ReorderAllItemsQueueFirst();
+        RefreshFilter(0);
+        SyncBatchPasteKeyboardHook();
+        _ = TryPushClipboardQueueHeadAsync();
+    }
+
+    private void TryAdvancePasteQueueAfterGlobalPaste()
+    {
+        if (GetBatchMode() == BatchPasteQueueMode.Off || _batchQueue.Count == 0) return;
+
+        var done = _batchQueue[0];
+        _batchQueue.RemoveAt(0);
+        if (!done.IsQuickPaste)
+        {
+            done.TouchCopiedTime();
+            if (done.PersistedId is long pid)
+                _historyStore.TryUpdateCopiedAt(pid, done.CopiedAt);
+        }
+        UpdateBatchOrderProperties();
+        ReorderAllItemsQueueFirst();
+        RefreshFilter(0);
+        SyncBatchPasteKeyboardHook();
+        _ = TryPushClipboardQueueHeadAsync();
+    }
+
+    /// <summary>仅写剪贴板为队首，不发按键；供入队后目标中 Ctrl+V / Shift+Insert 粘贴衔接。</summary>
+    private async Task TryPushClipboardQueueHeadAsync()
+    {
+        await _queueClipboardPushLock.WaitAsync();
+        try
+        {
+            if (_batchQueue.Count == 0) return;
+            var item = _batchQueue[0];
+
+            _isSettingClipboard = true;
+            try
+            {
+                if (_hwnd != IntPtr.Zero)
+                    Win32.TryEmptyClipboardAfterOpen(_hwnd);
+
+                var ok = false;
+                const int clipRetries = 8;
+                const int clipRetryDelayMs = 55;
+                try
+                {
+                    switch (item.Type)
+                    {
+                        case EntryType.Text:
+                            ok = await TrySetClipboardAsync(
+                                () => System.Windows.Clipboard.SetText(item.TextContent ?? ""),
+                                $"queueHead SetText len={item.TextContent?.Length ?? 0}",
+                                maxRetries: clipRetries,
+                                delayMs: clipRetryDelayMs,
+                                clipNudgeHwnd: _hwnd);
+                            break;
+                        case EntryType.Image:
+                        {
+                            BitmapImage? bi = null;
+                            using (var ms = new MemoryStream(item.ImageData!))
+                            {
+                                bi = new BitmapImage();
+                                bi.BeginInit();
+                                bi.StreamSource = ms;
+                                bi.CacheOption = BitmapCacheOption.OnLoad;
+                                bi.EndInit();
+                            }
+                            if (bi != null && bi.CanFreeze) bi.Freeze();
+                            if (bi != null)
+                            {
+                                ok = await TrySetClipboardAsync(
+                                    () => System.Windows.Clipboard.SetImage(bi),
+                                    $"queueHead SetImage {bi.PixelWidth}x{bi.PixelHeight}",
+                                    maxRetries: clipRetries,
+                                    delayMs: clipRetryDelayMs,
+                                    clipNudgeHwnd: _hwnd);
+                            }
+                            if (!ok && item.ImageData is { Length: > 0 })
+                            {
+                                string? tmpPath = null;
+                                try
+                                {
+                                    var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+                                    Directory.CreateDirectory(dir);
+                                    tmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
+                                    File.WriteAllBytes(tmpPath, item.ImageData);
+                                    var flFb = new StringCollection();
+                                    flFb.Add(tmpPath);
+                                    ok = await TrySetClipboardAsync(
+                                        () => System.Windows.Clipboard.SetFileDropList(flFb),
+                                        "queueHead SetFileDropList imageFallback",
+                                        maxRetries: clipRetries,
+                                        delayMs: clipRetryDelayMs,
+                                        clipNudgeHwnd: _hwnd);
+                                    if (!ok && tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
+                                }
+                                catch (Exception ex)
+                                {
+                                    ClipboardDiagnosticsLog.Write($"queueHead image fallback EX {ex.GetType().Name}: {ex.Message}");
+                                    if (tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
+                                }
+                            }
+                            break;
+                        }
+                        case EntryType.Files:
+                        {
+                            var fl = new StringCollection();
+                            fl.AddRange(item.FilePaths!);
+                            ok = await TrySetClipboardAsync(
+                                () => System.Windows.Clipboard.SetFileDropList(fl),
+                                $"queueHead count={fl.Count}",
+                                maxRetries: clipRetries,
+                                delayMs: clipRetryDelayMs,
+                                clipNudgeHwnd: _hwnd);
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ClipboardDiagnosticsLog.Write($"queueHead unexpected {ex.GetType().Name}: {ex.Message}");
+                }
+
+                ClipboardDiagnosticsLog.Write($"queueHead ok={ok}");
+                await Task.Delay(10);
+            }
+            finally
+            {
+                _isSettingClipboard = false;
+            }
+        }
+        finally
+        {
+            _queueClipboardPushLock.Release();
+        }
+    }
+#else
+    private void EnqueueSelectedForBatchPasteMode() { }
+    private void TryAdvancePasteQueueAfterGlobalPaste() { }
+    private Task TryPushClipboardQueueHeadAsync() => Task.CompletedTask;
+#endif
+
+    private void AutoBatchEnqueueIfNeeded(ClipboardEntry entry)
+    {
+#if CLIPX_CLIPBOARD
+        if (entry.IsQuickPaste) return;
+        var mode = GetBatchMode();
+        if (mode == BatchPasteQueueMode.Off) return;
+
+        _batchQueue.Remove(entry);
+        if (mode == BatchPasteQueueMode.Fifo)
+            _batchQueue.Add(entry);
+        else
+            _batchQueue.Insert(0, entry);
+        UpdateBatchOrderProperties();
+        ReorderAllItemsQueueFirst();
+        SyncBatchPasteKeyboardHook();
+        _ = TryPushClipboardQueueHeadAsync();
+#endif
+    }
+
+    private void BatchModeHeader_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        CycleBatchPasteMode();
+    }
+
+    private void BatchModeHeader_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        OpenBatchMenuPopup();
+    }
+
+    private void OpenBatchMenuPopup()
+    {
+        BatchMenuPopup.PlacementTarget = BatchModeHeaderBorder;
+        BatchMenuPopup.Placement = PlacementMode.Bottom;
+        RebuildBatchMenuNav();
+        _batchNavIndex = 0;
+        BatchMenuPopup.IsOpen = true;
+        ApplyBatchMenuHighlight();
+    }
+
+    private void CloseBatchMenuNavUi()
+    {
+        foreach (var (row, _) in _batchMenuNav)
+            row.ClearValue(Border.BackgroundProperty);
+        _batchMenuNav.Clear();
+        _batchNavIndex = 0;
+    }
+
+    private void RebuildBatchMenuNav()
+    {
+        _batchMenuNav.Clear();
+        void Add(Border b, Action a) => _batchMenuNav.Add((b, a));
+        Add(BatchRowPasteAll, ActivateBatchPasteAll);
+    }
+
+    private void ApplyBatchMenuHighlight()
+    {
+        var hi = FindResource("SelectedBrush") as Brush ?? System.Windows.Media.Brushes.LightGray;
+        for (int i = 0; i < _batchMenuNav.Count; i++)
+            _batchMenuNav[i].Row.Background = i == _batchNavIndex ? hi : System.Windows.Media.Brushes.Transparent;
+    }
+
+    private void MoveBatchMenuHighlight(int delta)
+    {
+        if (_batchMenuNav.Count == 0) return;
+        _batchNavIndex = (_batchNavIndex + delta + _batchMenuNav.Count) % _batchMenuNav.Count;
+        ApplyBatchMenuHighlight();
+    }
+
+    private void ActivateBatchMenuHighlight()
+    {
+        if (_batchMenuNav.Count == 0) return;
+        if (_batchNavIndex < 0 || _batchNavIndex >= _batchMenuNav.Count) return;
+        _batchMenuNav[_batchNavIndex].Activate();
+    }
+
+    private async void ActivateBatchPasteAll()
+    {
+        BatchMenuPopup.IsOpen = false;
+        CloseBatchMenuNavUi();
+        var list = _batchQueue.ToList();
+        if (list.Count == 0) return;
+        _batchQueue.Clear();
+        UpdateBatchOrderProperties();
+        RefreshFilter(0);
+        SyncBatchPasteKeyboardHook();
+        var mergeText = _appSettings?.BatchPasteMergeText ?? true;
+        if (IsAllTextEntries(list) && mergeText)
+            await RunAllTextBatchSingleClipboardAsync(list, newlineAfterEachTextWhenCtrlEnter: false);
+        else if (mergeText)
+            await RunOrderedPastesWithAdjacentTextMergeAsync(list, newlineAfterEachTextWhenCtrlEnter: false);
+        else
+            await RunSequentialPastesAsync(list);
+    }
+
+    private void BatchMenu_PasteAll_Click(object sender, MouseButtonEventArgs e) => ActivateBatchPasteAll();
+
+    private void HandleMainEnterKey(bool ctrlHeldWithEnter = false)
+    {
+        if (ItemsList.SelectedItems.Count > 1)
+        {
+            if (GetBatchMode() != BatchPasteQueueMode.Off)
+            {
+                EnqueueSelectedForBatchPasteMode();
+                return;
+            }
+            _ = PasteMultipleSelectedInOrderAsync(newlineAfterEachTextWhenCtrlEnter: ctrlHeldWithEnter);
+            return;
+        }
+        if (_batchQueue.Count > 0)
+        {
+            _ = PasteBatchQueueHeadAsync();
+            return;
+        }
+        PasteSelectedItem();
+    }
+
+    private async Task PasteBatchQueueHeadAsync()
+    {
+        if (_batchQueue.Count == 0) return;
+        var item = _batchQueue[0];
+        _batchQueue.RemoveAt(0);
+        if (!item.IsQuickPaste)
+        {
+            item.TouchCopiedTime();
+            if (item.PersistedId is long pid)
+                _historyStore.TryUpdateCopiedAt(pid, item.CopiedAt);
+        }
+        UpdateBatchOrderProperties();
+        ReorderAllItemsQueueFirst();
+        RefreshFilter(0);
+        await PasteEntryAsync(item, hidePopupAfter: true);
+#if CLIPX_CLIPBOARD
+        SyncBatchPasteKeyboardHook();
+        if (_batchQueue.Count > 0)
+            await TryPushClipboardQueueHeadAsync();
+#endif
+    }
+
+    private async Task PasteMultipleSelectedInOrderAsync(bool newlineAfterEachTextWhenCtrlEnter = false)
+    {
+        var ordered = ItemsList.SelectedItems.Cast<ClipboardEntry>()
+            .Where(e => _displayItems.Contains(e))
+            .OrderBy(e => _displayItems.IndexOf(e))
+            .ToList();
+        if (ordered.Count == 0) return;
+        if (ordered.Count == 1)
+        {
+            await PasteEntryAsync(ordered[0], hidePopupAfter: true);
+            return;
+        }
+
+        var mergeText = _appSettings?.BatchPasteMergeText ?? true;
+        if (IsAllTextEntries(ordered) && mergeText)
+            await RunAllTextBatchSingleClipboardAsync(ordered, newlineAfterEachTextWhenCtrlEnter);
+        else if (mergeText)
+            await RunOrderedPastesWithAdjacentTextMergeAsync(ordered, newlineAfterEachTextWhenCtrlEnter);
+        else
+            await RunSequentialPastesAsync(ordered, newlineAfterEachTextWhenCtrlEnter);
+    }
+
+    private static bool IsAllTextEntries(IReadOnlyList<ClipboardEntry> items) =>
+        items.Count > 0 && items.All(e => e.Type == EntryType.Text);
+
+    /// <summary>保持顺序将列表切成连续纯文段与其它条目（每段 1 条非文本，或连续文本）。</summary>
+    private static List<List<ClipboardEntry>> BuildAdjacentTextRuns(IReadOnlyList<ClipboardEntry> ordered)
+    {
+        var segments = new List<List<ClipboardEntry>>();
+        var i = 0;
+        while (i < ordered.Count)
+        {
+            if (ordered[i].Type == EntryType.Text)
+            {
+                var run = new List<ClipboardEntry>();
+                while (i < ordered.Count && ordered[i].Type == EntryType.Text)
+                {
+                    run.Add(ordered[i]);
+                    i++;
+                }
+                segments.Add(run);
+            }
+            else
+            {
+                segments.Add([ordered[i]]);
+                i++;
+            }
+        }
+        return segments;
+    }
+
+    /// <summary>开启合并粘贴且条目类型混合时：仅将相邻的纯文本合并成一段粘贴，图/文件等仍分段粘贴。</summary>
+    private async Task RunOrderedPastesWithAdjacentTextMergeAsync(
+        IReadOnlyList<ClipboardEntry> items,
+        bool newlineAfterEachTextWhenCtrlEnter)
+    {
+        var segments = BuildAdjacentTextRuns(items);
+        _sequentialPasteHold = true;
+        try
+        {
+            var opIndex = 0;
+            for (var s = 0; s < segments.Count; s++)
+            {
+                var seg = segments[s];
+                var isLast = s == segments.Count - 1;
+                if (seg.Count >= 2 && IsAllTextEntries(seg))
+                {
+                    await RunAllTextBatchSingleClipboardAsync(
+                        seg,
+                        newlineAfterEachTextWhenCtrlEnter,
+                        hidePopupAfter: isLast,
+                        applyHistoryReorder: false,
+                        ownsGlobalPasteState: false);
+                }
+                else
+                {
+                    await PasteEntryAsync(
+                        seg[0],
+                        hidePopupAfter: isLast,
+                        sequentialSegmentIndex: opIndex,
+                        sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
+                }
+                opIndex++;
+                if (!isLast)
+                    await Task.Delay(SequentialInterSegmentDelayMs);
+            }
+
+            if (items.Count > 0)
+                ApplyDeferredSequentialPasteHistoryOrder(items);
+
+            if (items.Count > 0)
+                await Task.Delay(SequentialTailSettleMs);
+        }
+        finally
+        {
+            _sequentialPasteHold = false;
+            _pasteInProgress = false;
+        }
+    }
+
+    /// <summary>纯文本多选：拼成一段一次 SetClipboard + 一次粘贴，等价于逐条贴接在一起，但无 N 次剪贴板轮询与段间等待。</summary>
+    private async Task RunAllTextBatchSingleClipboardAsync(
+        IReadOnlyList<ClipboardEntry> ordered,
+        bool newlineAfterEachTextWhenCtrlEnter,
+        bool hidePopupAfter = true,
+        bool applyHistoryReorder = true,
+        bool ownsGlobalPasteState = true)
+    {
+        int cap = 0;
+        var nlLen = Environment.NewLine.Length;
+        foreach (var e in ordered)
+        {
+            cap += (e.TextContent?.Length ?? 0);
+            if (newlineAfterEachTextWhenCtrlEnter)
+                cap += nlLen;
+        }
+        var sb = new StringBuilder(cap + 8);
+        foreach (var e in ordered)
+        {
+            sb.Append(e.TextContent);
+            if (newlineAfterEachTextWhenCtrlEnter)
+                sb.Append(Environment.NewLine);
+        }
+        var combined = sb.ToString();
+
+        if (ownsGlobalPasteState)
+            _sequentialPasteHold = true;
+        _pasteInProgress = true;
+        try
+        {
+            ClearPendingDelete();
+            if (_targetWindow != IntPtr.Zero && !Win32.IsWindow(_targetWindow))
+                _targetWindow = IntPtr.Zero;
+
+            ClipboardDiagnosticsLog.Write(
+                $"paste BATCH_TEXT_ONE_SHOT count={ordered.Count} len={combined.Length} ctrlNl={newlineAfterEachTextWhenCtrlEnter} outerHold={ownsGlobalPasteState}");
+
+            if (hidePopupAfter)
+                HidePopup();
+            if (_targetWindow != IntPtr.Zero)
+                Win32.SetForegroundWindowAggressive(_targetWindow);
+
+            await Task.Delay(26);
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+            if (_hwnd != IntPtr.Zero)
+                Win32.TryEmptyClipboardAfterOpen(_hwnd);
+
+            _isSettingClipboard = true;
+            var ok = await TrySetClipboardAsync(
+                () => System.Windows.Clipboard.SetText(combined),
+                $"SetText batchCombined len={combined.Length}",
+                maxRetries: 10,
+                delayMs: 45,
+                clipNudgeHwnd: _hwnd);
+            await Task.Delay(10);
+            _isSettingClipboard = false;
+
+            if (ok)
+            {
+                await Task.Delay(14);
+                SendCtrlV();
+            }
+
+            if (applyHistoryReorder)
+                ApplyDeferredSequentialPasteHistoryOrder(ordered);
+            await Task.Delay(80);
+        }
+        finally
+        {
+            if (ownsGlobalPasteState)
+            {
+                _sequentialPasteHold = false;
+                _pasteInProgress = false;
+            }
+        }
+    }
+
+    /// <summary>连续段之间极短让步，避免 CLIPBRD_E_CANT_OPEN（仅图/文件等必须分段时使用）。</summary>
+    private const int SequentialInterSegmentDelayMs = 22;
+
+    /// <summary>整轮结束后稍晚再解除「粘贴中」。</summary>
+    private const int SequentialTailSettleMs = 85;
+
+    /// <summary>多段粘贴共享外部「粘贴进行中」标志，避免每段之间剪贴板监听插队。</summary>
+    private async Task RunSequentialPastesAsync(IReadOnlyList<ClipboardEntry> items, bool newlineAfterEachTextWhenCtrlEnter = false)
+    {
+        _sequentialPasteHold = true;
+        try
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                await PasteEntryAsync(
+                    items[i],
+                    hidePopupAfter: i == items.Count - 1,
+                    sequentialSegmentIndex: i,
+                    sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
+                if (i < items.Count - 1)
+                    await Task.Delay(SequentialInterSegmentDelayMs);
+            }
+
+            if (items.Count > 0)
+                ApplyDeferredSequentialPasteHistoryOrder(items);
+
+            if (items.Count > 0)
+                await Task.Delay(SequentialTailSettleMs);
+        }
+        finally
+        {
+            _sequentialPasteHold = false;
+            _pasteInProgress = false;
+        }
+    }
+
+    /// <summary>连续粘贴结束后，按「后贴的在最上」依次插队置顶并补写库，只做一次列表刷新。</summary>
+    private void ApplyDeferredSequentialPasteHistoryOrder(IReadOnlyList<ClipboardEntry> itemsInPasteOrder)
+    {
+        if (itemsInPasteOrder.Count == 0) return;
+        for (int j = itemsInPasteOrder.Count - 1; j >= 0; j--)
+        {
+            var item = itemsInPasteOrder[j];
+            if (item.IsQuickPaste) continue;
+            var idx = _allItems.IndexOf(item);
+            if (idx > 0) { _allItems.RemoveAt(idx); _allItems.Insert(0, item); }
+            item.TouchCopiedTime();
+            if (item.PersistedId is long pid)
+                _historyStore.TryUpdateCopiedAt(pid, item.CopiedAt);
+        }
+        RefreshFilter(0);
+    }
+
+    private void TryOpenBatchOrContextMenuFromKeyboard()
+    {
+        if (_displayItems.Count == 0) return;
+        if (ItemsList.SelectedItem is not ClipboardEntry) return;
+
+        if (ShouldPreferBatchMenuOverItemContext())
+        {
+            if (ItemsList.SelectedItem is ClipboardEntry entry
+                && ItemsList.ItemContainerGenerator.ContainerFromItem(entry) is ListBoxItem li)
+            {
+                BatchMenuPopup.PlacementTarget = li;
+                BatchMenuPopup.Placement = PlacementMode.Right;
+            }
+            else
+            {
+                BatchMenuPopup.PlacementTarget = BatchModeHeaderBorder;
+                BatchMenuPopup.Placement = PlacementMode.Bottom;
+            }
+            OpenBatchMenuPopup();
+            return;
+        }
+        OpenContextMenuFromKeyboard();
+    }
+
+    private bool ShouldPreferBatchMenuOverItemContext() =>
+        GetBatchMode() != BatchPasteQueueMode.Off || _batchQueue.Count > 0;
+
+    #endregion
+
     #region Popup Show/Hide
 
     public void TogglePopup()
@@ -822,6 +1605,9 @@ public partial class PopupWindow : Window
         _searchText = "";
         _typeFilter = null;
         _quickPhraseOnly = false;
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
+        _mouseShiftAnchorIndex = -1;
         TypeFilterText.Text = "全部";
 
         RefreshFilter();
@@ -856,7 +1642,11 @@ public partial class PopupWindow : Window
         if (_displayItems.Count > 0)
             ItemsList.SelectedIndex = 0;
 
+#if CLIPX_CLIPBOARD
+        SyncBatchPasteKeyboardHook();
+#else
         InstallKeyboardHook();
+#endif
         InstallMouseHook();
     }
 
@@ -879,15 +1669,34 @@ public partial class PopupWindow : Window
     {
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;
-        UninstallKeyboardHook();
         UninstallMouseHook();
         CloseEntryPreviewBubble();
         CloseContextMenuPopup();
+        BatchMenuPopup.IsOpen = false;
+        CloseBatchMenuNavUi();
+#if CLIPX_CLIPBOARD
+        if (GetBatchMode() == BatchPasteQueueMode.Off)
+        {
+            _batchQueue.Clear();
+            UpdateBatchOrderProperties();
+        }
+#else
+        _batchQueue.Clear();
+        UpdateBatchOrderProperties();
+#endif
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
+        _mouseShiftAnchorIndex = -1;
         ShortcutHelpPopup.IsOpen = false;
         PhraseEditPopup.IsOpen = false;
         _phraseEditEntry = null;
         _phraseEditBuffer = "";
         ClearPendingDelete();
+#if CLIPX_CLIPBOARD
+        SyncBatchPasteKeyboardHook();
+#else
+        UninstallKeyboardHook();
+#endif
         Hide();
     }
 
@@ -2094,13 +2903,55 @@ public partial class PopupWindow : Window
 
     private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode < 0 || !_isPopupVisible)
+        if (nCode < 0)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         var msg = wParam.ToInt32();
         var kb = Marshal.PtrToStructure<Win32.KBDLLHOOKSTRUCT>(lParam);
         var isKeyDown = msg is Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN;
         var isKeyUp = msg is Win32.WM_KEYUP or Win32.WM_SYSKEYUP;
+
+#if CLIPX_CLIPBOARD
+        // 非本窗口内 Ctrl+V 松 V、或 Shift+Insert 松 Insert：FIFO/LIFO 出队并写下一项到剪贴板；不拦截按键
+        if (isKeyUp)
+        {
+            var injEarly = (kb.flags & (Win32.LLKHF_INJECTED | Win32.LLKHF_LOWER_IL_INJECTED)) != 0;
+            if (!injEarly && !_isSettingClipboard && !_pasteInProgress && _activeFileJumpPicker == null)
+            {
+                bool ctrlNow = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0
+                    || (Win32.GetAsyncKeyState(0xA2) & 0x8000) != 0
+                    || (Win32.GetAsyncKeyState(0xA3) & 0x8000) != 0;
+                bool shiftNow = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
+                    || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
+                    || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
+                bool pasteChord =
+                    (kb.vkCode == Win32.VK_V && ctrlNow)
+                    || (kb.vkCode == Win32.VK_INSERT && shiftNow);
+                if (pasteChord)
+                {
+                    var fg = Win32.GetForegroundWindow();
+                    if (fg != IntPtr.Zero && fg != _hwnd
+                        && GetBatchMode() != BatchPasteQueueMode.Off
+                        && _batchQueue.Count > 0)
+                    {
+                        long tick = Environment.TickCount64;
+                        if (tick - _lastGlobalPasteQueueAdvanceTick > 120)
+                        {
+                            _lastGlobalPasteQueueAdvanceTick = tick;
+                            Dispatcher.BeginInvoke(new Action(TryAdvancePasteQueueAfterGlobalPaste));
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
+        if (!_isPopupVisible)
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+        // 面板未关闭时钩子仍会吃掉未识别的键；多段粘贴中间几次不走 HidePopup，SendInput 的 Shift+Insert 必须放行。
+        if ((kb.flags & (Win32.LLKHF_INJECTED | Win32.LLKHF_LOWER_IL_INJECTED)) != 0)
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         if (_activeFileJumpPicker != null)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
@@ -2109,6 +2960,16 @@ public partial class PopupWindow : Window
         {
             if (PhraseEditPopup.IsOpen)
                 return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+            if (BatchMenuPopup.IsOpen)
+            {
+                if (_ctxAltCloseMenuArmed && !_ctxAltComboDuringRelease)
+                    Dispatcher.BeginInvoke(() => { BatchMenuPopup.IsOpen = false; CloseBatchMenuNavUi(); });
+                _ctxAltCloseMenuArmed = false;
+                _ctxAltAwaitRelease = false;
+                _ctxAltComboDuringRelease = false;
+                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            }
 
             if (ContextPopup.IsOpen)
             {
@@ -2121,7 +2982,7 @@ public partial class PopupWindow : Window
             }
 
             if (_ctxAltAwaitRelease && !_ctxAltComboDuringRelease)
-                Dispatcher.BeginInvoke(OpenContextMenuFromKeyboard);
+                Dispatcher.BeginInvoke(TryOpenBatchOrContextMenuFromKeyboard);
             _ctxAltAwaitRelease = false;
             _ctxAltComboDuringRelease = false;
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
@@ -2202,6 +3063,40 @@ public partial class PopupWindow : Window
             return (IntPtr)1;
         }
 
+        if (BatchMenuPopup.IsOpen)
+        {
+            if (IsMenuAltVk(kb.vkCode))
+            {
+                _ctxAltCloseMenuArmed = true;
+                _ctxAltComboDuringRelease = false;
+                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            }
+
+            bool altPhyB = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
+                || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
+                || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
+            if (_ctxAltCloseMenuArmed && altPhyB)
+                _ctxAltComboDuringRelease = true;
+
+            switch (kb.vkCode)
+            {
+                case Win32.VK_UP:
+                    Dispatcher.BeginInvoke(() => MoveBatchMenuHighlight(-1));
+                    return (IntPtr)1;
+                case Win32.VK_DOWN:
+                    Dispatcher.BeginInvoke(() => MoveBatchMenuHighlight(1));
+                    return (IntPtr)1;
+                case Win32.VK_RETURN:
+                    Dispatcher.BeginInvoke(ActivateBatchMenuHighlight);
+                    return (IntPtr)1;
+                case Win32.VK_ESCAPE:
+                    Dispatcher.BeginInvoke(() => { BatchMenuPopup.IsOpen = false; CloseBatchMenuNavUi(); });
+                    return (IntPtr)1;
+                default:
+                    return (IntPtr)1;
+            }
+        }
+
         if (ContextPopup.IsOpen)
         {
             if (IsMenuAltVk(kb.vkCode))
@@ -2236,7 +3131,7 @@ public partial class PopupWindow : Window
             }
         }
 
-        if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !ContextPopup.IsOpen)
+        if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !ContextPopup.IsOpen && !BatchMenuPopup.IsOpen)
         {
             _ctxAltAwaitRelease = true;
             _ctxAltComboDuringRelease = false;
@@ -2277,7 +3172,21 @@ public partial class PopupWindow : Window
                 Dispatcher.BeginInvoke(() => ScrollPage(-1));
                 return (IntPtr)1;
             }
+            if (kb.vkCode == Win32.VK_RETURN)
+            {
+                bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
+                Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
+                return (IntPtr)1;
+            }
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        }
+
+        // Enter：不等同于「组合键放行」。Ctrl+点击多选后常仍按住 Ctrl 再按回车，必须在钩子内拦截。
+        if (kb.vkCode == Win32.VK_RETURN)
+        {
+            bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
+            Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
+            return (IntPtr)1;
         }
 
         if (ctrlHeld || altHeld)
@@ -2289,10 +3198,28 @@ public partial class PopupWindow : Window
                 Dispatcher.BeginInvoke(ToggleEntryPreviewBubble);
                 return (IntPtr)1;
             case Win32.VK_UP:
-                Dispatcher.BeginInvoke(() => MoveSelection(-1));
+                Dispatcher.BeginInvoke(() =>
+                {
+                    bool shift = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
+                        || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
+                        || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
+                    if (shift)
+                        MoveSelectionExtend(-1);
+                    else
+                        MoveSelection(-1);
+                });
                 return (IntPtr)1;
             case Win32.VK_DOWN:
-                Dispatcher.BeginInvoke(() => MoveSelection(1));
+                Dispatcher.BeginInvoke(() =>
+                {
+                    bool shift = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
+                        || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
+                        || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
+                    if (shift)
+                        MoveSelectionExtend(1);
+                    else
+                        MoveSelection(1);
+                });
                 return (IntPtr)1;
             case Win32.VK_HOME:
                 Dispatcher.BeginInvoke(MoveSelectionToFirst);
@@ -2312,12 +3239,15 @@ public partial class PopupWindow : Window
             case Win32.VK_RIGHT:
                 Dispatcher.BeginInvoke(() => ScrollPage(1));
                 return (IntPtr)1;
-            case Win32.VK_RETURN:
-                Dispatcher.BeginInvoke(PasteSelectedItem);
-                return (IntPtr)1;
             case Win32.VK_ESCAPE:
                 Dispatcher.BeginInvoke(() =>
                 {
+                    if (BatchMenuPopup.IsOpen)
+                    {
+                        BatchMenuPopup.IsOpen = false;
+                        CloseBatchMenuNavUi();
+                        return;
+                    }
                     if (ContextPopup.IsOpen)
                     {
                         CloseContextMenuPopup();
@@ -2400,16 +3330,19 @@ public partial class PopupWindow : Window
             ("↑↓", "选择"),
             ("Home/End", "首尾"),
             ("PgUp/Dn", "翻页"),
-            ("Enter", "粘贴"),
+            ("Enter", "单条粘贴；有队列时先贴队首；普通+多选为顺序连贴；FIFO/LIFO+多选为入队；其它窗口 Ctrl+V 或 Shift+Insert 各出队一条；Ctrl+Enter 多选时每条文本末换行（仅普通连贴）"),
             ($"{m}+Tab", "仅看快捷短语（再按切换）"),
             ("Tab", "循环类型筛选"),
             ("a-z", "拼音搜索"),
         };
 #if CLIPX_CLIPBOARD
         lines.Add(("Space/中键", "预览当前条目"));
+        lines.Add(("Shift+↑↓", "扩展多选；FIFO/LIFO 时新复制会按模式入队（角标、队列置顶）"));
+        var batchCy = _appSettings?.BatchModeCycleHotkeyDisplayName ?? "Alt+/";
+        lines.Add((batchCy, "循环批量模式（普通→LIFO→FIFO），与顶栏「批量」左键相同；可在设置里修改"));
 #endif
         lines.Add(("Del×2", "连按两次删除当前条目"));
-        lines.Add(("Alt", "键盘打开右键菜单（↑↓ Enter）"));
+        lines.Add(("Alt", "批量一次性粘贴菜单（已开 FIFO/LIFO 或队列非空）否则条目右键菜单（↑↓ Enter）"));
         lines.Add(("Esc", "关闭菜单、预览、取消删除线、清空搜索或关闭面板"));
 
         FooterHints.Inlines.Clear();
@@ -2463,6 +3396,10 @@ public partial class PopupWindow : Window
         "连按两次删除当前条目" => "删除",
         "键盘打开右键菜单（↑↓ Enter）" => "右键菜单",
         "关闭菜单、预览、取消删除线、清空搜索或关闭面板" => "取消/关闭",
+        "单条粘贴；有批量队列时先贴队首；多选时按列表顺序连续贴；Ctrl+Enter 多选时每条文本末尾附带换行" => "粘贴",
+        "扩展选中区间并写入批量队列（顶栏排序+角标）" => "批量选",
+        "批量一次性粘贴菜单（已开 FIFO/LIFO 或队列非空）否则条目右键菜单（↑↓ Enter）" => "Alt菜单",
+        "循环批量模式（普通→LIFO→FIFO），与顶栏「批量」左键相同；可在设置里修改" => "批量模式",
         _ => full
     };
 
@@ -2691,30 +3628,66 @@ public partial class PopupWindow : Window
     private void MoveSelection(int delta)
     {
         if (_displayItems.Count == 0) return;
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
         var idx = ItemsList.SelectedIndex + delta;
         if (idx < 0) idx = 0;
         if (idx >= _displayItems.Count) idx = _displayItems.Count - 1;
         ItemsList.SelectedIndex = idx;
+        _mouseShiftAnchorIndex = idx;
         ItemsList.ScrollIntoView(ItemsList.SelectedItem);
+    }
+
+    private void MoveSelectionExtend(int delta)
+    {
+        if (_displayItems.Count == 0) return;
+
+        // 第一次按 Shift+↑↓：以当前选中行为锚点
+        if (_selectionRangeAnchor < 0)
+        {
+            int cur = ItemsList.SelectedIndex >= 0 ? ItemsList.SelectedIndex : 0;
+            _selectionRangeAnchor = cur;
+            _selectionCursorEnd = cur;
+        }
+
+        // 移动"光标端"
+        _selectionCursorEnd = Math.Clamp(_selectionCursorEnd + delta, 0, _displayItems.Count - 1);
+
+        // 更新 WPF 多选区间（锚点↔光标端 之间所有行）
+        int a = Math.Min(_selectionRangeAnchor, _selectionCursorEnd);
+        int b = Math.Max(_selectionRangeAnchor, _selectionCursorEnd);
+        ItemsList.SelectedItems.Clear();
+        for (int i = a; i <= b; i++)
+            ItemsList.SelectedItems.Add(_displayItems[i]);
+        ItemsList.ScrollIntoView(_displayItems[_selectionCursorEnd]);
+        _mouseShiftAnchorIndex = _selectionCursorEnd;
     }
 
     private void MoveSelectionToFirst()
     {
         if (_displayItems.Count == 0) return;
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
         ItemsList.SelectedIndex = 0;
+        _mouseShiftAnchorIndex = 0;
         ItemsList.ScrollIntoView(ItemsList.SelectedItem);
     }
 
     private void MoveSelectionToLast()
     {
         if (_displayItems.Count == 0) return;
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
         ItemsList.SelectedIndex = _displayItems.Count - 1;
+        _mouseShiftAnchorIndex = _displayItems.Count - 1;
         ItemsList.ScrollIntoView(ItemsList.SelectedItem);
     }
 
     private void ScrollPage(int direction)
     {
         if (_displayItems.Count == 0) return;
+        _selectionRangeAnchor = -1;
+        _selectionCursorEnd = -1;
         var sv = GetListScrollViewer();
         if (sv == null) return;
 
@@ -2732,6 +3705,7 @@ public partial class PopupWindow : Window
         _firstVisibleIndex = newFirstVisible;
         int newSel = Math.Clamp(newFirstVisible + relSelection, 0, _displayItems.Count - 1);
         ItemsList.SelectedIndex = newSel;
+        _mouseShiftAnchorIndex = newSel;
 
         UpdateVisibleIndices(newFirstVisible);
     }
@@ -2815,12 +3789,24 @@ public partial class PopupWindow : Window
     private async void PasteSelectedItem()
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item) return;
+        await PasteEntryAsync(item, hidePopupAfter: true);
+    }
+
+    /// <param name="sequentialSegmentIndex">≥0 表示连续粘贴中的第几段（无段间延时）；-1 表示单次粘贴（保留对焦/剪贴板/回波延时）。</param>
+    /// <param name="sendNewlineAfterTextWhenCtrlEnterBatch">多选且由 Ctrl+Enter 触发时：每一小段为文本则写入剪贴板时在末尾追加系统换行（不再发键盘回车）。</param>
+    private async Task PasteEntryAsync(
+        ClipboardEntry item,
+        bool hidePopupAfter,
+        int sequentialSegmentIndex = -1,
+        bool sendNewlineAfterTextWhenCtrlEnterBatch = false)
+    {
         _pasteInProgress = true;
         try
         {
         ClearPendingDelete();
 
-        if (!item.IsQuickPaste)
+        // 连续粘贴时若每段都置顶+写库+通知 UI，列表会逐条「蹦」且加重卡顿；整轮结束后再统一排序（见 ApplyDeferredSequentialPasteHistoryOrder）。
+        if (!item.IsQuickPaste && !_sequentialPasteHold)
         {
             var idx = _allItems.IndexOf(item);
             if (idx > 0) { _allItems.RemoveAt(idx); _allItems.Insert(0, item); }
@@ -2842,22 +3828,33 @@ public partial class PopupWindow : Window
         });
 
         // 在仍是弹窗前台时 OpenClipboard，常与目标进程（大段文本/富文本 OLE）争用 → 连续 CLIPBRD_E_CANT_OPEN。先 Hide + 强力切回目标并等待剪贴板释放。
-        HidePopup();
+        if (hidePopupAfter)
+            HidePopup();
         if (_targetWindow != IntPtr.Zero)
             Win32.SetForegroundWindowAggressive(_targetWindow);
         var textLen = item.TextContent?.Length ?? 0;
         var imgBytes = item.ImageData?.Length ?? 0;
         var imgPixels = item.Type == EntryType.Image ? item.ImageWidth * item.ImageHeight : 0;
         var hugeClipboardImage = item.Type == EntryType.Image && (imgBytes > 900_000 || imgPixels > 1_200_000);
-        var focusSettleMs = item.Type switch
+        var noSegmentDelays = sequentialSegmentIndex >= 0;
+        if (!noSegmentDelays)
         {
-            EntryType.Text => textLen > 12000 ? 150 : textLen > 4000 ? 120 : 70,
-            EntryType.Image => hugeClipboardImage ? 220 : 160,
-            _ => 50
-        };
-        await Task.Delay(focusSettleMs);
-        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
-        ClipboardDiagnosticsLog.Write($"paste focusSettleMs={focusSettleMs} after Hide+SetForegroundAggressive");
+            var focusSettleMs = item.Type switch
+            {
+                EntryType.Text => textLen > 12000 ? 150 : textLen > 4000 ? 120 : 70,
+                EntryType.Image => hugeClipboardImage ? 220 : 160,
+                _ => 50
+            };
+            await Task.Delay(focusSettleMs);
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+            ClipboardDiagnosticsLog.Write($"paste focusSettleMs={focusSettleMs} after Hide+SetForegroundAggressive");
+        }
+        else
+        {
+            if (sequentialSegmentIndex == 0)
+                await Dispatcher.Yield();
+            ClipboardDiagnosticsLog.Write($"paste sequential segment {sequentialSegmentIndex} (no focus settle delay)");
+        }
 
         if (_hwnd != IntPtr.Zero)
         {
@@ -2867,16 +3864,25 @@ public partial class PopupWindow : Window
 
         _isSettingClipboard = true;
         bool clipboardOk = false;
+        var clipRetries = noSegmentDelays ? 8 : 2;
+        var clipRetryDelayMs = noSegmentDelays ? 60 : 40;
         try
         {
             switch (item.Type)
             {
                 case EntryType.Text:
+                {
+                    var clipText = sendNewlineAfterTextWhenCtrlEnterBatch && noSegmentDelays
+                        ? item.TextContent! + Environment.NewLine
+                        : item.TextContent!;
                     clipboardOk = await TrySetClipboardAsync(
-                        () => System.Windows.Clipboard.SetText(item.TextContent!),
-                        $"SetText len={textLen}",
+                        () => System.Windows.Clipboard.SetText(clipText),
+                        $"SetText len={clipText.Length}",
+                        maxRetries: clipRetries,
+                        delayMs: clipRetryDelayMs,
                         clipNudgeHwnd: _hwnd);
                     break;
+                }
                 case EntryType.Image:
                     // BitmapDecoder+Frame 在 using 结束后会释放流，而 SetImage 对 OLE 常延迟落盘，目标程序 Ctrl+V 拿到空/坏图。
                     // BitmapImage + OnLoad 在 EndInit 时把像素读入内存，Freeze 后可安全关闭流再写剪贴板。
@@ -2898,6 +3904,8 @@ public partial class PopupWindow : Window
                     clipboardOk = await TrySetClipboardAsync(
                         () => System.Windows.Clipboard.SetImage(bi),
                         $"SetImage {bi.PixelWidth}x{bi.PixelHeight}",
+                        maxRetries: clipRetries,
+                        delayMs: clipRetryDelayMs,
                         clipNudgeHwnd: _hwnd);
                     if (!clipboardOk && item.ImageData is { Length: > 0 })
                     {
@@ -2913,6 +3921,8 @@ public partial class PopupWindow : Window
                             clipboardOk = await TrySetClipboardAsync(
                                 () => System.Windows.Clipboard.SetFileDropList(flFb),
                                 "SetFileDropList imageFallback",
+                                maxRetries: clipRetries,
+                                delayMs: clipRetryDelayMs,
                                 clipNudgeHwnd: _hwnd);
                             if (!clipboardOk)
                             {
@@ -2934,6 +3944,8 @@ public partial class PopupWindow : Window
                     clipboardOk = await TrySetClipboardAsync(
                         () => System.Windows.Clipboard.SetFileDropList(fl),
                         $"SetFileDropList count={fl.Count} {SummarizeFileDropForLog(item.FilePaths!)}",
+                        maxRetries: clipRetries,
+                        delayMs: clipRetryDelayMs,
                         clipNudgeHwnd: _hwnd);
                     break;
             }
@@ -2947,25 +3959,38 @@ public partial class PopupWindow : Window
 
         if (!clipboardOk)
             _isSettingClipboard = false;
+        else if (noSegmentDelays)
+        {
+            // 连续段：短让步后同步清标志，避免误标「外部复制」。
+            await Task.Delay(8);
+            _isSettingClipboard = false;
+        }
         else
-            // SystemIdle 晚于 WM_CLIPBOARDUPDATE，避免抢先清空标志把本次 Set 误判为外部剪贴板内容
             _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
 
         if (clipboardOk)
         {
-            var prePasteDelayMs = item.Type == EntryType.Image ? 85 : 45;
-            await Task.Delay(prePasteDelayMs);
+            if (!noSegmentDelays)
+            {
+                var prePasteDelayMs = item.Type == EntryType.Image ? 85 : 45;
+                await Task.Delay(prePasteDelayMs);
+            }
+
             SendCtrlV();
-            // Excel/WPS 等 OLE 应用在处理粘贴后可能调用 EmptyClipboard 或触发延迟渲染，
-            // 产生的 WM_CLIPBOARDUPDATE 不应被识别为新的剪贴板内容。
-            // 保持 _pasteInProgress 以抑制这些粘贴后「回波」。
-            await Task.Delay(600);
-            ClipboardDiagnosticsLog.Write("paste post-echo suppression window elapsed");
+
+            // 连续粘贴：整轮结束后再 TailSettle；段间另有 SequentialInterSegmentDelayMs。单次粘贴保留回波窗口。
+            if (!noSegmentDelays)
+            {
+                const int postEchoMs = 600;
+                await Task.Delay(postEchoMs);
+                ClipboardDiagnosticsLog.Write($"paste post-echo suppression window elapsed (ms={postEchoMs})");
+            }
         }
         }
         finally
         {
-            _pasteInProgress = false;
+            if (!_sequentialPasteHold)
+                _pasteInProgress = false;
         }
     }
 
@@ -3234,26 +4259,90 @@ public partial class PopupWindow : Window
 
     private void ItemsList_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton != MouseButton.Middle) return;
+        if (e.ChangedButton == MouseButton.Middle)
+        {
+            var elementM = e.OriginalSource as DependencyObject;
+            while (elementM != null && elementM is not ListBoxItem)
+                elementM = VisualTreeHelper.GetParent(elementM);
+            if (elementM is not ListBoxItem lbiM || lbiM.DataContext is not ClipboardEntry entryM) return;
+
+            ItemsList.SelectedItem = entryM;
+            ItemsList.ScrollIntoView(entryM);
+            _mouseShiftAnchorIndex = _displayItems.IndexOf(entryM);
+            if (_mouseShiftAnchorIndex >= 0)
+            {
+                _selectionRangeAnchor = _mouseShiftAnchorIndex;
+                _selectionCursorEnd = _mouseShiftAnchorIndex;
+            }
+            ShowEntryPreviewBubble();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.ChangedButton != MouseButton.Left) return;
+
         var element = e.OriginalSource as DependencyObject;
         while (element != null && element is not ListBoxItem)
             element = VisualTreeHelper.GetParent(element);
         if (element is not ListBoxItem lbi || lbi.DataContext is not ClipboardEntry entry) return;
 
-        ItemsList.SelectedItem = entry;
-        ItemsList.ScrollIntoView(entry);
-        ShowEntryPreviewBubble();
+        int idx = _displayItems.IndexOf(entry);
+        if (idx < 0) return;
+
+        bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+
+        if (shift)
+        {
+            int anchor = _mouseShiftAnchorIndex >= 0
+                ? _mouseShiftAnchorIndex
+                : (ItemsList.SelectedIndex >= 0 ? ItemsList.SelectedIndex : idx);
+            int a = Math.Min(anchor, idx);
+            int b = Math.Max(anchor, idx);
+            ItemsList.SelectedItems.Clear();
+            for (int i = a; i <= b; i++)
+                ItemsList.SelectedItems.Add(_displayItems[i]);
+            ItemsList.ScrollIntoView(_displayItems[idx]);
+            _selectionRangeAnchor = a;
+            _selectionCursorEnd = b;
+            e.Handled = true;
+            return;
+        }
+
+        if (ctrl)
+        {
+            if (ItemsList.SelectedItems.Contains(entry))
+                ItemsList.SelectedItems.Remove(entry);
+            else
+                ItemsList.SelectedItems.Add(entry);
+            _mouseShiftAnchorIndex = idx;
+            _selectionRangeAnchor = idx;
+            _selectionCursorEnd = idx;
+            ItemsList.ScrollIntoView(entry);
+            e.Handled = true;
+            return;
+        }
+
+        ItemsList.SelectedItems.Clear();
+        ItemsList.SelectedItems.Add(entry);
+        _mouseShiftAnchorIndex = idx;
+        _selectionRangeAnchor = idx;
+        _selectionCursorEnd = idx;
         e.Handled = true;
     }
 
     private void ItemsList_PreviewMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left) return;
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 || (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            return;
+        if (ItemsList.SelectedItems.Count != 1) return;
         var element = e.OriginalSource as DependencyObject;
         while (element != null && element is not ListBoxItem)
             element = VisualTreeHelper.GetParent(element);
-        if (element is ListBoxItem lbi && lbi.DataContext is ClipboardEntry)
+        if (element is ListBoxItem lbi && lbi.DataContext is ClipboardEntry sel)
         {
-            ItemsList.SelectedItem = lbi.DataContext;
+            ItemsList.SelectedItem = sel;
             PasteSelectedItem();
         }
     }
@@ -3434,6 +4523,8 @@ public partial class PopupWindow : Window
         }
         else
             ClearPendingDelete();
+        _batchQueue.Remove(entry);
+        UpdateBatchOrderProperties();
         if (entry.IsQuickPaste)
             _quickPastes.RemoveAll(q => q.Content == entry.TextContent);
         else
@@ -3500,6 +4591,8 @@ public partial class PopupWindow : Window
         var item = _displayItems.FirstOrDefault(i => i.DisplayIndex == index);
         if (item == null) return;
         ItemsList.SelectedItem = item;
+        int li = _displayItems.IndexOf(item);
+        if (li >= 0) _mouseShiftAnchorIndex = li;
         PasteSelectedItem();
     }
 

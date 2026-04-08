@@ -14,6 +14,9 @@ public partial class SettingsWindow : Window
     private uint _pendingFileJumpModifiers;
     private uint _pendingFileJumpKey;
     private bool _isRecordingFileJumpHotkey;
+    private uint _pendingBatchModeCycleModifiers;
+    private uint _pendingBatchModeCycleKey;
+    private bool _isRecordingBatchModeCycleHotkey;
     private string _pendingTheme;
     private string _pendingPosition;
     private double _pendingOpacity;
@@ -27,6 +30,7 @@ public partial class SettingsWindow : Window
     private bool _pendingFileJumpAutoOnFirstClick;
     private bool _pendingFileJumpAutoSyncOnReturn;
     private string _pendingModifierKey;
+    private bool _pendingBatchPasteMergeText;
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
 
@@ -55,6 +59,10 @@ public partial class SettingsWindow : Window
         _pendingFileJumpModifiers = settings.FileJumpHotkeyModifiers;
         _pendingFileJumpKey = settings.FileJumpHotkeyKey;
         FileJumpHotkeyText.Text = settings.FileJumpHotkeyDisplayName;
+
+        _pendingBatchModeCycleModifiers = settings.BatchModeCycleHotkeyModifiers;
+        _pendingBatchModeCycleKey = settings.BatchModeCycleHotkeyKey;
+        BatchModeCycleHotkeyText.Text = settings.BatchModeCycleHotkeyDisplayName;
         FileJumpDelayMsBox.Text = settings.FileJumpPickerShowDelayMs.ToString();
 
         _pendingTheme = settings.Theme;
@@ -98,6 +106,9 @@ public partial class SettingsWindow : Window
 
         _pendingModifierKey = settings.PanelModifierKey;
         ModifierText.Text = ModifierDisplayName(_pendingModifierKey);
+
+        _pendingBatchPasteMergeText = settings.BatchPasteMergeText;
+        BatchPasteMergeToggleText.Text = _pendingBatchPasteMergeText ? "开启" : "关闭";
 
         CustomFileDialogStore.RulesChanged += OnCustomFileDialogRulesChanged;
         Closed += SettingsWindow_OnClosed;
@@ -241,6 +252,24 @@ public partial class SettingsWindow : Window
         _ => "光标处"
     };
 
+    /// <summary>
+    /// 录制全局快捷键时的修饰键掩码。WPF 的 <see cref="Keyboard.Modifiers"/> 在按住 Win 时常为 None，
+    /// 需用 <see cref="Win32.GetAsyncKeyState"/> 检测左右 Win。
+    /// </summary>
+    private static uint GetHotkeyModifiersForRecording()
+    {
+        var wpf = Keyboard.Modifiers;
+        uint mod = 0;
+        if (wpf.HasFlag(ModifierKeys.Control)) mod |= Win32.MOD_CONTROL;
+        if (wpf.HasFlag(ModifierKeys.Shift)) mod |= Win32.MOD_SHIFT;
+        if (wpf.HasFlag(ModifierKeys.Alt)) mod |= Win32.MOD_ALT;
+        if (wpf.HasFlag(ModifierKeys.Windows)) mod |= Win32.MOD_WIN;
+        if ((Win32.GetAsyncKeyState(Win32.VK_LWIN) & 0x8000) != 0
+            || (Win32.GetAsyncKeyState(Win32.VK_RWIN) & 0x8000) != 0)
+            mod |= Win32.MOD_WIN;
+        return mod;
+    }
+
     private void HotkeyBox_Click(object sender, RoutedEventArgs e)
     {
         _isRecordingHotkey = true;
@@ -259,14 +288,8 @@ public partial class SettingsWindow : Window
             or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin)
             return;
 
-        var modifiers = Keyboard.Modifiers;
-        if (modifiers == ModifierKeys.None) return;
-
-        uint mod = 0;
-        if (modifiers.HasFlag(ModifierKeys.Control)) mod |= Win32.MOD_CONTROL;
-        if (modifiers.HasFlag(ModifierKeys.Shift)) mod |= Win32.MOD_SHIFT;
-        if (modifiers.HasFlag(ModifierKeys.Alt)) mod |= Win32.MOD_ALT;
-        if (modifiers.HasFlag(ModifierKeys.Windows)) mod |= Win32.MOD_WIN;
+        uint mod = GetHotkeyModifiersForRecording();
+        if (mod == 0) return;
 
         _pendingModifiers = mod;
         _pendingKey = (uint)KeyInterop.VirtualKeyFromKey(key);
@@ -306,14 +329,8 @@ public partial class SettingsWindow : Window
             or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin)
             return;
 
-        var modifiers = Keyboard.Modifiers;
-        if (modifiers == ModifierKeys.None) return;
-
-        uint mod = 0;
-        if (modifiers.HasFlag(ModifierKeys.Control)) mod |= Win32.MOD_CONTROL;
-        if (modifiers.HasFlag(ModifierKeys.Shift)) mod |= Win32.MOD_SHIFT;
-        if (modifiers.HasFlag(ModifierKeys.Alt)) mod |= Win32.MOD_ALT;
-        if (modifiers.HasFlag(ModifierKeys.Windows)) mod |= Win32.MOD_WIN;
+        uint mod = GetHotkeyModifiersForRecording();
+        if (mod == 0) return;
 
         _pendingFileJumpModifiers = mod;
         _pendingFileJumpKey = (uint)KeyInterop.VirtualKeyFromKey(key);
@@ -330,6 +347,45 @@ public partial class SettingsWindow : Window
             _isRecordingFileJumpHotkey = false;
             FileJumpHotkeyText.Text = AppSettings.FormatHotkey(_pendingFileJumpModifiers, _pendingFileJumpKey);
             FileJumpHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+        }
+    }
+
+    private void BatchModeCycleHotkeyBox_Click(object sender, RoutedEventArgs e)
+    {
+        _isRecordingBatchModeCycleHotkey = true;
+        BatchModeCycleHotkeyText.Text = "按下快捷键…";
+        BatchModeCycleHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("AccentBg");
+        BatchModeCycleHotkeyBox.Focus();
+    }
+
+    private void BatchModeCycleHotkeyBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_isRecordingBatchModeCycleHotkey) return;
+        e.Handled = true;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin)
+            return;
+
+        uint mod = GetHotkeyModifiersForRecording();
+        if (mod == 0) return;
+
+        _pendingBatchModeCycleModifiers = mod;
+        _pendingBatchModeCycleKey = (uint)KeyInterop.VirtualKeyFromKey(key);
+        _isRecordingBatchModeCycleHotkey = false;
+
+        BatchModeCycleHotkeyText.Text = AppSettings.FormatHotkey(_pendingBatchModeCycleModifiers, _pendingBatchModeCycleKey);
+        BatchModeCycleHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+    }
+
+    private void BatchModeCycleHotkeyBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_isRecordingBatchModeCycleHotkey)
+        {
+            _isRecordingBatchModeCycleHotkey = false;
+            BatchModeCycleHotkeyText.Text = AppSettings.FormatHotkey(_pendingBatchModeCycleModifiers, _pendingBatchModeCycleKey);
+            BatchModeCycleHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
         }
     }
 
@@ -422,6 +478,12 @@ public partial class SettingsWindow : Window
         ModifierText.Text = ModifierDisplayName(_pendingModifierKey);
     }
 
+    private void BatchPasteMergeCycle_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingBatchPasteMergeText = !_pendingBatchPasteMergeText;
+        BatchPasteMergeToggleText.Text = _pendingBatchPasteMergeText ? "开启" : "关闭";
+    }
+
     private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (OpacityValueText == null) return;
@@ -468,11 +530,27 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        if (_pendingModifiers == _pendingBatchModeCycleModifiers && _pendingKey == _pendingBatchModeCycleKey)
+        {
+            System.Windows.MessageBox.Show("呼出快捷键与批量模式切换键不能相同。", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_pendingFileJumpModifiers == _pendingBatchModeCycleModifiers && _pendingFileJumpKey == _pendingBatchModeCycleKey)
+        {
+            System.Windows.MessageBox.Show("文件对话框跳转键与批量模式切换键不能相同。", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         _settings.MaxItems = maxItems;
         _settings.HotkeyModifiers = _pendingModifiers;
         _settings.HotkeyKey = _pendingKey;
         _settings.FileJumpHotkeyModifiers = _pendingFileJumpModifiers;
         _settings.FileJumpHotkeyKey = _pendingFileJumpKey;
+        _settings.BatchModeCycleHotkeyModifiers = _pendingBatchModeCycleModifiers;
+        _settings.BatchModeCycleHotkeyKey = _pendingBatchModeCycleKey;
         _settings.FileJumpPickerShowDelayMs = jumpDelayMs;
         _settings.Theme = _pendingTheme;
         _settings.PopupPosition = _pendingPosition;
@@ -488,6 +566,7 @@ public partial class SettingsWindow : Window
         _settings.FileJumpAutoSyncOnReturn = _pendingFileJumpAutoSyncOnReturn;
         _settings.PreviewMaxLines = previewLines;
         _settings.PanelModifierKey = _pendingModifierKey;
+        _settings.BatchPasteMergeText = _pendingBatchPasteMergeText;
 
         DialogResult = true;
         Close();

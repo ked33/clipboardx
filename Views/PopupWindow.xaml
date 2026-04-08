@@ -13,6 +13,12 @@
 
     <Window.Resources>
         <ResourceDictionary>
+            <BooleanToVisibilityConverter x:Key="BoolVis"/>
+            <!-- 批量模式色（与托盘同源）；运行时在 UpdateBatchHeaderUi 中按模式覆盖 -->
+            <SolidColorBrush x:Key="BatchModeTagFill" Color="#139493"/>
+            <SolidColorBrush x:Key="BatchModeTagFg" Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="BatchModeBadgeFill" Color="#139493"/>
+            <SolidColorBrush x:Key="BatchModeBadgeFg" Color="#FFFFFF"/>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="SharedPopupStyles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
@@ -39,6 +45,7 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" Cursor="SizeAll"
                             MouseLeftButtonDown="Header_DragStart">
@@ -48,12 +55,30 @@
                     <TextBlock x:Name="ItemCountText" FontSize="12" Foreground="{DynamicResource SecondaryText}"
                                VerticalAlignment="Center" Margin="8,1,0,0"/>
                 </StackPanel>
-                <Border Grid.Column="1" Background="Transparent" Cursor="Hand" Margin="0,0,10,0"
+                <Border x:Name="BatchModeHeaderBorder" Grid.Column="1" Cursor="Hand"
+                        Margin="0,0,8,0" Padding="10,4" CornerRadius="10"
+                        Background="{DynamicResource BatchModeTagFill}"
+                        MouseLeftButtonUp="BatchModeHeader_Click"
+                        MouseRightButtonUp="BatchModeHeader_RightClick"
+                        ToolTip="批量：左键循环 普通→LIFO→FIFO（与设置里「批量模式切换键」相同）；右键菜单可一次粘贴队列。Shift+↑↓ 扩展多选。普通：多选 Enter 顺序连贴；FIFO/LIFO：多选 Enter 入队（角标、置顶），新复制自动入队，在他处每次 Ctrl+V 或 Shift+Insert 出队一条">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Style.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Opacity" Value="0.92"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock x:Name="BatchModeHeaderText" Text="普通" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{DynamicResource BatchModeTagFg}" VerticalAlignment="Center"/>
+                </Border>
+                <Border Grid.Column="2" Background="Transparent" Cursor="Hand" Margin="0,0,10,0"
                         MouseLeftButtonUp="Settings_Click" ToolTip="设置">
                     <TextBlock Text="⚙" FontSize="14" Foreground="{DynamicResource SecondaryText}" VerticalAlignment="Center"/>
                 </Border>
                 <!-- Type filter button -->
-                <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" CornerRadius="10"
+                <Border Grid.Column="3" Background="{DynamicResource SurfaceBrush}" CornerRadius="10"
                         Padding="8,3" Cursor="Hand" MouseLeftButtonUp="TypeFilter_Click">
                     <TextBlock x:Name="TypeFilterText" Text="全部" FontSize="11"
                                Foreground="{DynamicResource SecondaryText}" VerticalAlignment="Center"/>
@@ -86,6 +111,7 @@
                          BorderThickness="0"
                          MaxHeight="420"
                          Padding="4"
+                         SelectionMode="Extended"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.ScrollChanged="ItemsList_ScrollChanged"
                          PreviewMouseLeftButtonUp="ItemsList_PreviewMouseUp"
@@ -93,11 +119,14 @@
                          PreviewMouseDown="ItemsList_PreviewMouseDown">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
+                            <Grid Margin="0,1" UseLayoutRounding="True">
+                                <Border CornerRadius="8" Padding="0" Margin="4,0" Background="Transparent">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="16"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
@@ -179,7 +208,7 @@
 
                                 <TextBlock Grid.Column="3" Text="{Binding TimeAgo}"
                                            Foreground="{DynamicResource SecondaryText}" FontSize="11"
-                                           VerticalAlignment="Center">
+                                           VerticalAlignment="Center" Margin="0,0,8,0" TextAlignment="Right">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Style.Triggers>
@@ -190,6 +219,21 @@
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
+
+                                <!-- 队列序号：独立列、Ellipse 保证正圆，不与时间重叠 -->
+                                <Grid Grid.Column="4" Width="22" Height="22" Margin="0,0,6,0"
+                                      VerticalAlignment="Center"
+                                      Visibility="{Binding HasBatchOrder, Converter={StaticResource BoolVis}}"
+                                      SnapsToDevicePixels="True" UseLayoutRounding="True">
+                                    <Ellipse Fill="{DynamicResource BatchModeBadgeFill}"/>
+                                    <TextBlock Text="{Binding BatchOrderLabel}"
+                                               FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource BatchModeBadgeFg}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Padding="0,0,0,0"/>
+                                </Grid>
+                            </Grid>
+                                </Border>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -215,19 +259,21 @@
                     <TextBlock Grid.Column="0" x:Name="FooterHints" Foreground="{DynamicResource MutedText}" FontSize="10"
                                VerticalAlignment="Center" Margin="0,0,8,0"
                                TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-                    <Border x:Name="ShortcutHelpMoreBorder" Grid.Column="1" Padding="6,3" CornerRadius="4" Cursor="Hand"
-                            VerticalAlignment="Center" MouseLeftButtonUp="ShortcutHelpMore_Click">
+                    <Border x:Name="ShortcutHelpMoreBorder" Grid.Column="1" Padding="9,4" CornerRadius="10" Cursor="Hand"
+                            VerticalAlignment="Center" MouseLeftButtonUp="ShortcutHelpMore_Click"
+                            Background="{DynamicResource BatchModeTagFill}"
+                            ToolTip="展开完整快捷键说明">
                         <Border.Style>
                             <Style TargetType="Border">
-                                <Setter Property="Background" Value="Transparent"/>
                                 <Style.Triggers>
                                     <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                        <Setter Property="Opacity" Value="0.92"/>
                                     </Trigger>
                                 </Style.Triggers>
                             </Style>
                         </Border.Style>
-                        <TextBlock Text="more" FontSize="10" Foreground="{DynamicResource HintText}"/>
+                        <TextBlock Text="more" FontSize="10" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BatchModeTagFg}" VerticalAlignment="Center"/>
                     </Border>
                 </Grid>
             </Border>
@@ -356,6 +402,34 @@
                                 </Style>
                             </Border.Style>
                             <TextBlock Text="🗑 删除" Foreground="{DynamicResource SecondaryText}" FontSize="13"/>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Popup>
+
+            <Popup x:Name="BatchMenuPopup" StaysOpen="False"
+                   PlacementTarget="{Binding ElementName=BatchModeHeaderBorder}"
+                   Placement="Bottom" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="4">
+                <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="4" Margin="8"
+                        BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}" MinWidth="220">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.4"/>
+                    </Border.Effect>
+                    <StackPanel>
+                        <Border x:Name="BatchRowPasteAll" Padding="10,7" CornerRadius="6" Cursor="Hand"
+                                MouseLeftButtonUp="BatchMenu_PasteAll_Click">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="📋 批量粘贴（依次贴完全部队列）" Foreground="{DynamicResource PrimaryText}" FontSize="13"
+                                       TextWrapping="Wrap"/>
                         </Border>
                     </StackPanel>
                 </Border>

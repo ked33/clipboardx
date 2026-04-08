@@ -231,7 +231,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.2.9"   # 与 csproj 同步后改这里
+$v = "1.3.0"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -290,7 +290,14 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ## 更新记录
 
-完整历史见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**，以下摘录主要变更。
+结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.3.0
+
+- **剪贴板 · 批量队列**：支持 **普通 / FIFO / LIFO** 三种模式；多选在 **FIFO/LIFO** 下 **Enter 入队**，在目标应用内每次 **Ctrl+V** / **Shift+Insert** 出队并推进剪贴板；顶栏模式 **Tag**、列表 **序号角标**、**托盘图标** 随模式换色（普通青绿 **#139493**、FIFO 蓝、LIFO 金），托盘叠 **F/L** 标记
+- **剪贴板 · 快捷操作**：默认 **Alt+/**（可在设置中修改）在面板外 **循环切换** 批量模式，与面板顶栏左键顺序一致（普通 → LIFO → FIFO → 普通）
+- **剪贴板 · 主题**：暗色面板底色与灰阶贴近 **VS Code Dark+**，强调色与列表选中/悬停在弹窗内 **随当前批量模式主色** 混色，与顶栏 Tag 视觉统一；亮色仍为浅灰窗口底 + 品牌强调色
+- **剪贴板 · 交互**：底栏 **more** 与顶栏同样使用模式色 **pill**；快捷短语侧栏等延续不抢焦点输入；详见设置内帮助文案
 
 ### v1.2.9
 

@@ -23,7 +23,7 @@
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
                             <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectedBrush}"/>
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

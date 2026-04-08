@@ -83,6 +83,24 @@ public class ClipboardEntry : INotifyPropertyChanged
 
     public string IndexLabel => DisplayIndex >= 1 && DisplayIndex <= 9 ? DisplayIndex.ToString() : "";
 
+    private int _batchOrder;
+    /// <summary>批量粘贴队列中的顺序（1 起）；0 表示不在队列。</summary>
+    public int BatchOrder
+    {
+        get => _batchOrder;
+        set
+        {
+            if (_batchOrder == value) return;
+            _batchOrder = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BatchOrder)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasBatchOrder)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BatchOrderLabel)));
+        }
+    }
+
+    public bool HasBatchOrder => _batchOrder > 0;
+    public string BatchOrderLabel => _batchOrder > 0 ? _batchOrder.ToString() : "";
+
     private BitmapSource? _thumbnail;
 
     public BitmapSource? Thumbnail

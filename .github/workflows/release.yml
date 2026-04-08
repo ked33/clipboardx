@@ -132,10 +132,53 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Version from tag
         id: ver
         shell: bash
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: 组装 Release 正文（CHANGELOG 对应版本 + 发布包说明）
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          awk -v v="$VERSION" '
+            BEGIN { insection=0 }
+            /^## \[/ {
+              if ($0 ~ "^## \\[" v "\\]") { insection=1; next }
+              if (insection) { exit }
+            }
+            insection { print }
+          ' CHANGELOG.md > changelog_section.md
+          if [ ! -s changelog_section.md ]; then
+            echo "::error::CHANGELOG.md 中未找到 ## [$VERSION] 章节，请补全后再打 tag"
+            exit 1
+          fi
+          REPO="${{ github.repository }}"
+          {
+            echo "## 更新内容"
+            echo ""
+            cat changelog_section.md
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 发布包说明"
+            echo ""
+            echo "| 包名 | 说明 |"
+            echo "|------|------|"
+            echo "| \`ClipboardX-*\` | 完整版：剪贴板管理 + 文件对话框跳转 |"
+            echo "| \`ClipboardX-clipboard-*\` | 仅剪贴板管理（无文件跳转） |"
+            echo "| \`ClipboardX-filejump-*\` | 仅文件对话框跳转（无剪贴板历史） |"
+            echo "| \`*-no-runtime.zip\` | 需预装 .NET 8 **桌面**运行时（x64） |"
+            echo "| \`*-self-contained.zip\` | 自带运行时，解压即用 |"
+            echo "| \`*-setup.exe\` | Inno 完整版·框架依赖：体积小；向导可引导安装运行时 |"
+            echo "| \`*-setup-self-contained.exe\` | Inno 完整版·自包含：体积较大，无需单独装 .NET |"
+            echo ""
+            echo "完整版本历史见仓库 [\`CHANGELOG.md\`](https://github.com/${REPO}/blob/master/CHANGELOG.md)。"
+          } > release_body.md
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -146,19 +189,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release_body.md
           generate_release_notes: true
-          body: |
-            ## 发布包说明
-
-            | 包名 | 说明 |
-            |------|------|
-            | `ClipboardX-*` | 完整版：剪贴板管理 + 文件对话框跳转 |
-            | `ClipboardX-clipboard-*` | 仅剪贴板管理（无文件跳转功能） |
-            | `ClipboardX-filejump-*` | 仅文件对话框跳转（无剪贴板管理） |
-            | `*-no-runtime.zip` | 需预装 .NET 8 运行时 |
-            | `*-self-contained.zip` | 自带运行时，开箱即用 |
-            | `*-setup.exe` | Inno（完整版·框架依赖）：体积小，需本机 .NET 8 桌面运行时；缺失时安装程序可打开下载页 |
-            | `*-setup-self-contained.exe` | Inno（完整版·自包含）：体积大，无需单独装 .NET |
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

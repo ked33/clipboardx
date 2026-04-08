@@ -18,6 +18,9 @@ public partial class App : Application
     private static Mutex? _mutex;
     private WinForms.NotifyIcon? _trayIcon;
     private PopupWindow? _popup;
+#if CLIPX_CLIPBOARD
+    private BatchModeCycleHotkeyHost? _batchModeHotkeyHost;
+#endif
     private AppSettings _settings = new();
     private static bool _probingAssemblyResolveRegistered;
 
@@ -117,6 +120,18 @@ public partial class App : Application
         _popup = new PopupWindow();
         _popup.Initialize(_settings);
         _popup.SettingsRequested += OpenSettings;
+        _popup.BatchPasteModeChanged += (_, _) =>
+            Dispatcher.Invoke(RefreshTrayIcon);
+
+#if CLIPX_CLIPBOARD
+        EnsureBatchModeHotkeyHost();
+        if (!_batchModeHotkeyHost!.TryRegister(_settings.BatchModeCycleHotkeyModifiers, _settings.BatchModeCycleHotkeyKey))
+        {
+            System.Windows.MessageBox.Show(
+                $"批量模式切换快捷键 {_settings.BatchModeCycleHotkeyDisplayName} 注册失败，可能与其他软件冲突",
+                "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+#endif
 
         SetupTrayIcon(e.Args);
         _ = CheckForUpdatesOnStartupAsync();
@@ -180,7 +195,7 @@ public partial class App : Application
     {
         _trayIcon = new WinForms.NotifyIcon
         {
-            Icon = CreateTrayIcon(),
+            Icon = CreateTrayIconFromSettings(),
             Text = $"ClipboardX ({_settings.HotkeyDisplayName})",
             Visible = true
         };
@@ -251,6 +266,29 @@ public partial class App : Application
     {
         if (_trayIcon != null)
             _trayIcon.Text = $"ClipboardX ({_settings.HotkeyDisplayName})";
+    }
+
+    private void RefreshTrayIcon()
+    {
+        if (_trayIcon == null) return;
+        try
+        {
+            var old = _trayIcon.Icon;
+            _trayIcon.Icon = CreateTrayIconFromSettings();
+            old?.Dispose();
+        }
+        catch
+        {
+            /* 换图标失败时保留旧 Icon */
+        }
+    }
+
+    private Drawing.Icon CreateTrayIconFromSettings()
+    {
+        var mode = Enum.TryParse<BatchPasteQueueMode>(_settings.BatchPasteMode, true, out var m)
+            ? m
+            : BatchPasteQueueMode.Off;
+        return TrayIconSvg.CreateIcon(32, mode);
     }
 
     private async Task CheckForUpdatesAsync()
@@ -379,7 +417,6 @@ public partial class App : Application
 
         if (window.DialogResult == true)
         {
-            _popup?.ApplySettings(copy);
             _settings.MaxItems = copy.MaxItems;
             _settings.HotkeyModifiers = copy.HotkeyModifiers;
             _settings.HotkeyKey = copy.HotkeyKey;
@@ -400,11 +437,43 @@ public partial class App : Application
             _settings.FileJumpAutoOnFirstClick = copy.FileJumpAutoOnFirstClick;
             _settings.PreviewMaxLines = copy.PreviewMaxLines;
             _settings.PanelModifierKey = copy.PanelModifierKey;
+            _settings.BatchModeCycleHotkeyModifiers = copy.BatchModeCycleHotkeyModifiers;
+            _settings.BatchModeCycleHotkeyKey = copy.BatchModeCycleHotkeyKey;
+            _settings.BatchPasteMergeText = copy.BatchPasteMergeText;
             StartupRegistration.Apply(_settings.RunAtStartup);
             _settings.Save();
+            _popup?.ApplySettings(_settings);
+#if CLIPX_CLIPBOARD
+            ApplyBatchModeHotkeyAfterSettingsSaved();
+#endif
             UpdateTrayTooltip();
+            RefreshTrayIcon();
         }
     }
+
+#if CLIPX_CLIPBOARD
+    private void EnsureBatchModeHotkeyHost()
+    {
+        if (_batchModeHotkeyHost != null) return;
+        _batchModeHotkeyHost = new BatchModeCycleHotkeyHost();
+        _batchModeHotkeyHost.CycleRequested += () =>
+            Dispatcher.BeginInvoke(new Action(() => _popup?.CycleBatchPasteMode()));
+    }
+
+    /// <summary>设置已写入 _settings；若热键注册失败则回退并再次保存。</summary>
+    private void ApplyBatchModeHotkeyAfterSettingsSaved()
+    {
+        EnsureBatchModeHotkeyHost();
+        if (_batchModeHotkeyHost!.TryRegister(_settings.BatchModeCycleHotkeyModifiers, _settings.BatchModeCycleHotkeyKey))
+            return;
+        System.Windows.MessageBox.Show(
+            $"批量模式切换快捷键 {_settings.BatchModeCycleHotkeyDisplayName} 注册失败，已恢复原快捷键",
+            "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+        _settings.BatchModeCycleHotkeyModifiers = _batchModeHotkeyHost.CurrentModifiers;
+        _settings.BatchModeCycleHotkeyKey = _batchModeHotkeyHost.CurrentKey;
+        _settings.Save();
+    }
+#endif
 
 #if DEBUG
     private async void StartWindowInspection()
@@ -653,17 +722,19 @@ public partial class App : Application
     /// <summary>与托盘相同图稿，用于 WPF 窗口标题栏。</summary>
     public static ImageSource GetWindowIconSource()
     {
-        using var icon = CreateTrayIcon();
+        using var icon = TrayIconSvg.CreateIcon(32);
         return Imaging.CreateBitmapSourceFromHIcon(
             icon.Handle,
             System.Windows.Int32Rect.Empty,
             BitmapSizeOptions.FromEmptyOptions());
     }
 
-    private static Drawing.Icon CreateTrayIcon() => TrayIconSvg.CreateIcon(32);
-
     protected override void OnExit(ExitEventArgs e)
     {
+#if CLIPX_CLIPBOARD
+        _batchModeHotkeyHost?.DisposeHost();
+        _batchModeHotkeyHost = null;
+#endif
         _popup?.Cleanup();
         if (_trayIcon != null)
         {
