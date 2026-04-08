@@ -310,6 +310,8 @@ internal static class Win32
     public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    /// <summary>键盘焦点变化；部分宿主打开模态对话框时不一定再发 <see cref="EVENT_SYSTEM_FOREGROUND"/>。</summary>
+    public const uint EVENT_OBJECT_FOCUS = 0x8005;
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
@@ -457,6 +459,10 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetParent(IntPtr hWnd);
+
+    /// <summary>宿主主窗在前台时，模态 #32770 等可能仍挂在「最后活动弹出窗」上而非 GetForegroundWindow。</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetLastActivePopup(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);

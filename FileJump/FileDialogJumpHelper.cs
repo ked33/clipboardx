@@ -62,6 +62,70 @@ internal static class FileDialogJumpHelper
         return CustomFileDialogStore.FindMatchingRule(hwnd) != null;
     }
 
+    /// <summary>
+    /// 部分宿主（如微信）将键盘焦点落在对话框内子控件上时，<see cref="Win32.GetForegroundWindow"/> 可能返回子 HWND，
+    /// 而 <see cref="ClassifyFileDialog"/> 只对 #32770 等顶层成立。沿 GetParent 链上溯直至找到可对 <see cref="IsLikelyFileDialog"/> 成立的窗口。
+    /// </summary>
+    public static IntPtr ResolveFileDialogHwndFromWindowOrAncestor(IntPtr start)
+    {
+        if (start == IntPtr.Zero || !Win32.IsWindow(start)) return IntPtr.Zero;
+        var h = start;
+        for (var i = 0; i < 64 && h != IntPtr.Zero; i++)
+        {
+            if (IsLikelyFileDialog(h))
+                return h;
+            h = Win32.GetParent(h);
+        }
+
+        var root = Win32.GetAncestor(start, Win32.GA_ROOT);
+        if (root != IntPtr.Zero)
+        {
+            // 微信等：前台事件里的 HWND 常仍是主窗，模态「打开文件」在 GetLastActivePopup(主窗) 上。
+            Span<IntPtr> owners = root != start
+                ? stackalloc IntPtr[] { start, root }
+                : stackalloc IntPtr[] { start };
+            foreach (var owner in owners)
+            {
+                if (owner == IntPtr.Zero) continue;
+                var popup = Win32.GetLastActivePopup(owner);
+                if (popup != IntPtr.Zero
+                    && popup != owner
+                    && Win32.IsWindow(popup)
+                    && IsLikelyFileDialog(popup))
+                    return popup;
+            }
+
+            if (root != start && IsLikelyFileDialog(root))
+                return root;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 仅做轻量判断（沿父链比类名、看 <see cref="Win32.GetLastActivePopup"/>），供高频焦点钩过滤；
+    /// 不做 <see cref="ClassifyFileDialog"/>，避免在全局焦点事件上整树枚举子控件。
+    /// </summary>
+    public static bool QuickMayBeUnderFileDialog(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd)) return false;
+        var h = hwnd;
+        for (var i = 0; i < 14 && h != IntPtr.Zero; i++)
+        {
+            if (Win32.GetWindowClassName(h).Equals("#32770", StringComparison.Ordinal))
+                return true;
+            h = Win32.GetParent(h);
+        }
+
+        var root = Win32.GetAncestor(hwnd, Win32.GA_ROOT);
+        if (root == IntPtr.Zero) return false;
+        var pop = Win32.GetLastActivePopup(root);
+        return pop != IntPtr.Zero
+               && pop != root
+               && Win32.IsWindow(pop)
+               && Win32.GetWindowClassName(pop).Equals("#32770", StringComparison.Ordinal);
+    }
+
     /// <summary>进程主模块基名（小写，无扩展名），用于识别 WPS 套件。</summary>
     private static bool TryGetExeBaseNameLower(IntPtr hwnd, out string name)
     {

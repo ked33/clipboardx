@@ -4,6 +4,15 @@
 
 格式依据 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 的常见写法；日期为发布日（与 tag 推送日一致即可）。
 
+## [1.3.1] - 2026-04-09
+
+### 文件对话框跳转
+
+- **微信（Weixin）**：`ResolveFileDialogHwndFromWindowOrAncestor` 增加 **`GetLastActivePopup`**，前台仍为应用主窗时也能对齐模态 `#32770`
+- **到前台自动执行**：增加 **`EVENT_OBJECT_FOCUS`** 钩 + **`QuickMayBeUnderFileDialog`** 轻量过滤（部分宿主打开对话框时不重复发前台切换事件）
+- **首次点击自动跳转**：焦点触发的路径下同步调用 **`UpdateFileJumpClickToNavigateArm`**；前台事件优先对已解析的对话框句柄武装鼠标钩
+- **整理**：**`CollectCandidates`** 恢复单一 **Z 序推测（默认 +2）**，移除 **`CollectCandidatesAfterDialogReady`**；多处前台根窗口判断合并为 **`IsForegroundFocusOnFileDialogRoot`**
+
 ## [1.3.0] - 2026-04-08
 
 ### 剪贴板

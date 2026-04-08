@@ -52,6 +52,7 @@ public partial class PopupWindow : Window
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
     private IntPtr _winEventHook;
+    private IntPtr _winEventHookFocus;
 
     /// <summary>
     /// WH_KEYBOARD_LL / WH_MOUSE_LL 回调由 user32 保存函数指针；Unhook 后仍可能再触发一两次。
@@ -1988,8 +1989,11 @@ public partial class PopupWindow : Window
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
         var owner = s_popupWinEventOwner;
-        if (owner != null)
+        if (owner == null) return;
+        if (eventType == Win32.EVENT_SYSTEM_FOREGROUND)
             owner.OnForegroundChanged(hWinEventHook, eventType, hwnd, idObject, idChild, dwEventThread, dwmsEventTime);
+        else if (eventType == Win32.EVENT_OBJECT_FOCUS)
+            owner.OnGlobalFocusMaybeFileDialog(hwnd);
     }
 
     private void InstallForegroundWatcher()
@@ -2000,10 +2004,31 @@ public partial class PopupWindow : Window
             Win32.EVENT_SYSTEM_FOREGROUND, Win32.EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, s_popupWinEventThunk, 0, 0,
             Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+        if (_winEventHook == IntPtr.Zero)
+        {
+            s_popupWinEventOwner = null;
+            return;
+        }
+
+        _winEventHookFocus = Win32.SetWinEventHook(
+            Win32.EVENT_OBJECT_FOCUS, Win32.EVENT_OBJECT_FOCUS,
+            IntPtr.Zero, s_popupWinEventThunk, 0, 0,
+            Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+        if (_winEventHookFocus == IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_winEventHook);
+            _winEventHook = IntPtr.Zero;
+            s_popupWinEventOwner = null;
+        }
     }
 
     private void UninstallForegroundWatcher()
     {
+        if (_winEventHookFocus != IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_winEventHookFocus);
+            _winEventHookFocus = IntPtr.Zero;
+        }
         if (_winEventHook != IntPtr.Zero)
         {
             Win32.UnhookWinEvent(_winEventHook);
@@ -2011,6 +2036,26 @@ public partial class PopupWindow : Window
         }
         if (s_popupWinEventOwner == this)
             s_popupWinEventOwner = null;
+    }
+
+    /// <summary>
+    /// 微信等打开「选择文件」时可能不发前台切换事件，但焦点会进对话框；与 <see cref="OnForegroundChanged"/> 共用自动弹逻辑。
+    /// </summary>
+    private void OnGlobalFocusMaybeFileDialog(IntPtr hwnd)
+    {
+        if (_appSettings == null || !_appSettings.FileJumpPickerOpenWhenDialogForeground) return;
+        if (hwnd == IntPtr.Zero) return;
+        if (!FileDialogJumpHelper.QuickMayBeUnderFileDialog(hwnd)) return;
+
+        var dlg = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+        if (dlg == IntPtr.Zero) return;
+
+        ScheduleSnapshotFolderFromDialog(dlg);
+        Dispatcher.BeginInvoke(() =>
+        {
+            TryAutoOpenFileJumpPickerWhenDialogForeground(dlg);
+            UpdateFileJumpClickToNavigateArm(dlg);
+        });
     }
 
     private void OnForegroundChanged(
@@ -2024,15 +2069,20 @@ public partial class PopupWindow : Window
         Dispatcher.BeginInvoke(() => TryRememberExternalManagerFolder(prev));
         Dispatcher.BeginInvoke(() => TryRememberExternalManagerFolder(hwnd));
 
-        if (FileDialogJumpHelper.IsLikelyFileDialog(hwnd))
+        var dialogForForeground = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+        if (dialogForForeground != IntPtr.Zero)
         {
             var prevForAutoSync = prev;
-            ScheduleSnapshotFolderFromDialog(hwnd);
-            Dispatcher.BeginInvoke(() => TryAutoOpenFileJumpPickerWhenDialogForeground(hwnd));
+            ScheduleSnapshotFolderFromDialog(dialogForForeground);
+            Dispatcher.BeginInvoke(() => TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground));
             Dispatcher.BeginInvoke(() => TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync));
         }
 
-        Dispatcher.BeginInvoke(() => UpdateFileJumpClickToNavigateArm(hwnd));
+        var armTarget = dialogForForeground != IntPtr.Zero
+            ? dialogForForeground
+            : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+        Dispatcher.BeginInvoke(() =>
+            UpdateFileJumpClickToNavigateArm(armTarget != IntPtr.Zero ? armTarget : hwnd));
 
         if (!_isPopupVisible) return;
         if (hwnd == _hwnd || hwnd == _targetWindow) return;
@@ -2067,7 +2117,8 @@ public partial class PopupWindow : Window
                     if (scheduleGen != _dialogSnapshotScheduleGen) return;
                     if (_appSettings == null) return;
                     if (!Win32.IsWindow(target)) return;
-                    if (Win32.GetForegroundWindow() != target) return;
+                    var fgSnap = Win32.GetForegroundWindow();
+                    if (FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(fgSnap) != target) return;
                     if (FileDialogJumpHelper.TryReadCurrentFolder(target, out var folder)
                         && !string.IsNullOrEmpty(folder))
                     {
@@ -2090,8 +2141,9 @@ public partial class PopupWindow : Window
     {
         if (_appSettings == null || previousHwnd == IntPtr.Zero || previousHwnd == _hwnd) return;
         if (!Win32.IsWindow(previousHwnd)) return;
-        if (!FileDialogJumpHelper.IsLikelyFileDialog(previousHwnd)) return;
-        if (!FileDialogJumpHelper.TryReadCurrentFolder(previousHwnd, out var folder)
+        var dlg = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(previousHwnd);
+        if (dlg == IntPtr.Zero) return;
+        if (!FileDialogJumpHelper.TryReadCurrentFolder(dlg, out var folder)
             || string.IsNullOrEmpty(folder)) return;
 
         RememberLastDialogFolder(folder);
@@ -2259,6 +2311,21 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>
+    /// 当前键盘焦点是否落在该文件对话框根窗口内（含微信主窗前台 + <see cref="Win32.GetLastActivePopup"/> 模态框等情形）。
+    /// </summary>
+    private static bool IsForegroundFocusOnFileDialogRoot(IntPtr dialogRoot)
+    {
+        if (dialogRoot == IntPtr.Zero) return false;
+        var fg = Win32.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        var dlg = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(fg);
+        var fgRoot = dlg != IntPtr.Zero
+            ? Win32.GetAncestor(dlg, Win32.GA_ROOT)
+            : Win32.GetAncestor(fg, Win32.GA_ROOT);
+        return fgRoot == dialogRoot;
+    }
+
+    /// <summary>
     /// 检测到打开/保存对话框成为前台时，延时后再尝试自动弹出（等对话框内路径可读）。
     /// </summary>
     private void TryAutoOpenFileJumpPickerWhenDialogForeground(IntPtr foregroundHwnd)
@@ -2307,8 +2374,7 @@ public partial class PopupWindow : Window
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRoot == IntPtr.Zero) return;
 
-        var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
-        if (fgRoot != dialogRoot)
+        if (!IsForegroundFocusOnFileDialogRoot(dialogRoot))
             return;
 
         if (dialogRoot == _fileJumpAutoOpenPickerDoneRoot)
@@ -2369,10 +2435,7 @@ public partial class PopupWindow : Window
         if (_activeFileJumpPicker != null) return;
         if (_fileJumpPickerOpenInProgress) return;
 
-        var fgNow = Win32.GetForegroundWindow();
-        if (fgNow == IntPtr.Zero) return;
-        var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
-        if (fgRoot != dialogRootNow) return;
+        if (!IsForegroundFocusOnFileDialogRoot(dialogRootNow)) return;
 
         if (dialogRootNow == _fileJumpAutoOpenPickerDoneRoot) return;
 
@@ -2471,9 +2534,7 @@ public partial class PopupWindow : Window
     {
         if (_appSettings == null) return false;
         if (!Win32.IsWindow(dialogHwnd)) return false;
-        var fgNow = Win32.GetForegroundWindow();
-        var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
-        return fgRoot == dialogRoot;
+        return IsForegroundFocusOnFileDialogRoot(dialogRoot);
     }
 
     private void TryAutoSyncPathOnDialogReturnCore(IntPtr dialogHwnd, IntPtr dialogRoot, IntPtr previousForegroundHwnd)
@@ -2481,9 +2542,7 @@ public partial class PopupWindow : Window
         if (_appSettings == null) return;
         if (!Win32.IsWindow(dialogHwnd)) return;
 
-        var fgNow = Win32.GetForegroundWindow();
-        var fgRoot = Win32.GetAncestor(fgNow, Win32.GA_ROOT);
-        if (fgRoot != dialogRoot) return;
+        if (!IsForegroundFocusOnFileDialogRoot(dialogRoot)) return;
 
         var allowShellInject = _appSettings.EnableShellNavigateInject;
         var preferLastExternal = ShouldPreferLastExternalFolderForAutoSync(previousForegroundHwnd);
@@ -2729,11 +2788,9 @@ public partial class PopupWindow : Window
     /// <summary>前台可能是跳转列表窗；此时仍应对背后文件对话框取路径、导航。</summary>
     private IntPtr ResolveFileJumpTargetHwndInternal(IntPtr fgNow)
     {
-        if (FileDialogJumpHelper.ClassifyFileDialog(fgNow) != FileDialogKind.None)
-            return fgNow;
-
-        if (CustomFileDialogStore.FindMatchingRule(fgNow) != null)
-            return fgNow;
+        var resolved = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(fgNow);
+        if (resolved != IntPtr.Zero)
+            return resolved;
 
         if (_fileJumpLastDialogHwnd != IntPtr.Zero
             && Win32.IsWindow(_fileJumpLastDialogHwnd)
@@ -2837,7 +2894,8 @@ public partial class PopupWindow : Window
             return;
         }
 
-        if (!FileDialogJumpHelper.IsLikelyFileDialog(foregroundHwnd))
+        var dialogHwnd = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(foregroundHwnd);
+        if (dialogHwnd == IntPtr.Zero)
         {
             if (_fileJumpAutoArmedRoot != IntPtr.Zero && Win32.IsWindow(foregroundHwnd))
             {
@@ -2848,8 +2906,6 @@ public partial class PopupWindow : Window
             DisarmFileJumpClickToNavigate();
             return;
         }
-
-        var dialogHwnd = foregroundHwnd;
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRoot != IntPtr.Zero
             && dialogRoot == _fileJumpAutoFirstJumpDoneRoot
@@ -2878,7 +2934,8 @@ public partial class PopupWindow : Window
                 && CustomFileDialogStore.FindMatchingRule(dlg) == null) return;
 
             var fg = Win32.GetForegroundWindow();
-            if (fg != IntPtr.Zero && Win32.GetAncestor(fg, Win32.GA_ROOT) != _fileJumpAutoArmedRoot)
+            var fgDlg = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(fg);
+            if (fgDlg == IntPtr.Zero || Win32.GetAncestor(fgDlg, Win32.GA_ROOT) != _fileJumpAutoArmedRoot)
                 return;
 
             var mem = _appSettings.LastFileDialogFolder?.Trim();

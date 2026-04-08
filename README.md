@@ -231,7 +231,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.3.0"   # 与 csproj 同步后改这里
+$v = "1.3.1"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -291,6 +291,11 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.3.1
+
+- **文件对话框跳转**：微信（Weixin）等宿主下「打开文件」可依赖 **`GetLastActivePopup` + 全局焦点事件** 触发「到前台自动执行」；**首次点击自动跳转** 在焦点触发的路径下也会正确 **挂鼠标钩**
+- **整理**：候选路径采集恢复为默认 **Z 序 +2** 的轻量逻辑，去掉多轮 Sleep 重试；前台是否仍在对话框内统一为 **`IsForegroundFocusOnFileDialogRoot`**
 
 ### v1.3.0
 

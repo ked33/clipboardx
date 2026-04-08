@@ -1,6 +1,6 @@
 # ClipboardX：不抢焦点的剪贴板历史 + 开源的 Listary 式文件对话框跳转
 
-**当前版本：1.3.0**
+**当前版本：1.3.1**
 
 ## 为什么需要这样一个工具
 
@@ -197,11 +197,43 @@ ClipboardX 对 WPS 实现了六重降级：`ValuePattern.SetValue` → `ComboBox
 
 ---
 
+## Beta 与问题反馈
+
+ClipboardX 当前仍处于 **Beta** 阶段：功能与兼容性会持续迭代，在实际使用中有可能遇到异常、边界情况或未覆盖场景。**若遇到问题或有改进建议，欢迎及时反馈**，我会尽量尽快查看并处理。
+
+**推荐反馈渠道**：[GitHub Issues](https://github.com/chaojimct/clipboardx/issues) — 新建 Issue 即可，便于按版本检索、讨论与跟进。
+
+### 反馈模板（复制到新 Issue 中按需填写）
+
+```markdown
+## 环境
+- ClipboardX 版本：
+- Windows 版本（例如 Win11 24H2 / Win10 22H2）：
+- 安装方式（Inno 安装包 / 绿色 zip / 自包含或依赖系统 .NET 等）：
+- 若与场景相关：IDE、文件管理器、WPS 等软件及版本：
+
+## 期望与现象
+- 期望：
+- 实际：
+
+## 复现步骤（若可复现）
+1.
+2.
+3.
+
+## 附加信息
+- 截图或简短录屏（如有）：
+- 日志或数据目录（若已知，见仓库 README「数据与日志」）：
+- 其它说明：
+```
+
+---
+
 ## 下载与获取
 
 **GitHub 仓库**：[https://github.com/chaojimct/clipboardx](https://github.com/chaojimct/clipboardx)
 
-**下载最新版**：[Releases 页面](https://github.com/chaojimct/clipboardx/releases)（**当前介绍文档对应 1.3.0**；安装包与 zip 以发布页版本号为准，下列文件名中的 `*` 为版本号）
+**下载最新版**：[Releases 页面](https://github.com/chaojimct/clipboardx/releases)（**当前介绍文档对应 1.3.1**；安装包与 zip 以发布页版本号为准，下列文件名中的 `*` 为版本号）
 
 ### 安装包（推荐完整版用户）
 
