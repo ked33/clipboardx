@@ -4,6 +4,13 @@
 
 格式依据 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 的常见写法；日期为发布日（与 tag 推送日一致即可）。
 
+## [1.3.3] - 2026-04-09
+
+### 剪贴板
+
+- **Alt 全局热键（VS Code 等）**：呼出/关闭面板时吞物理 Alt KeyUp 并注入 **Ctrl Down → Ctrl Up → Alt Up**；热键关面板时清空 `_ctxAlt*`，避免收尾分支被误判；`BeginInvoke(() => HidePopup())` 修复 **TargetParameterCountException**
+- **批量队列**：`TryPushClipboardQueueHeadAsync` 在 `TrySetClipboardAsync` 重试间隙校验 **模式仍为 FIFO/LIFO 且队首未变**，避免切回普通或外部复制后仍被异步写回旧队首导致「粘贴成别的内容」
+
 ## [1.3.2] - 2026-04-09
 
 ### 剪贴板

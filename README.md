@@ -231,7 +231,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.3.1"   # 与 csproj 同步后改这里
+$v = "1.3.3"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -291,6 +291,11 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.3.3
+
+- **剪贴板 · Alt 全局热键**：改善 **VS Code** 等宿主下 **Alt+`** 呼出/关闭后的菜单焦点与键序收尾；修复 **`BeginInvoke(HidePopup)`** 导致的 **`TargetParameterCountException`**
+- **剪贴板 · 批量队列**：**FIFO/LIFO** 异步推剪贴板时若已切回**普通**或队首已变则中止写入，避免 **Ctrl+V 偶尔粘成别的内容**
 
 ### v1.3.1
 

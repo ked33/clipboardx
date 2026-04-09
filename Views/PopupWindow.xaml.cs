@@ -90,6 +90,12 @@ public partial class PopupWindow : Window
     private bool _ctxAltComboDuringRelease;
     /// <summary>右键菜单已打开时再次按下 Alt，松开时若无组合键则关闭菜单。</summary>
     private bool _ctxAltCloseMenuArmed;
+    /// <summary>
+    /// 含 Alt 的全局热键（如 Alt+`）打开面板后焦点仍在宿主（VS Code）；若用户先松 Alt，KeyUp 会进入宿主并抢走菜单焦点。
+    /// 在短时内在本钩子中吞掉「热键收尾」的 Alt 松开；此期间不 arms <see cref="_ctxAltAwaitRelease"/>，避免与自动重复 Down 冲突。
+    /// </summary>
+    private bool _awaitHotkeyAltChordCleanup;
+    private long _hotkeyAltChordCleanupDeadlineTick;
     private readonly List<(Border Row, Action Activate)> _contextMenuNav = new();
     private int _contextNavIndex;
     /// <summary>当前标为「待二次 Del 删除」的条目，与 <see cref="ClipboardEntry.IsPendingDelete"/> 同步。</summary>
@@ -1042,7 +1048,8 @@ public partial class PopupWindow : Window
     private void SyncBatchPasteKeyboardHook()
     {
         var need = _isPopupVisible
-            || (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0);
+            || (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0)
+            || _awaitHotkeyAltChordCleanup;
         if (need)
             InstallKeyboardHook();
         else
@@ -1051,6 +1058,23 @@ public partial class PopupWindow : Window
 #else
     private void SyncBatchPasteKeyboardHook() { }
 #endif
+
+    /// <summary>热键 Alt 收尾窗口超时后卸下钩子（若不再需要）。</summary>
+    private void TryExpireHotkeyAltChordCleanupDeadline()
+    {
+        if (!_awaitHotkeyAltChordCleanup || _hotkeyAltChordCleanupDeadlineTick == 0)
+            return;
+        if (Environment.TickCount64 <= _hotkeyAltChordCleanupDeadlineTick)
+            return;
+        _awaitHotkeyAltChordCleanup = false;
+        _hotkeyAltChordCleanupDeadlineTick = 0;
+#if CLIPX_CLIPBOARD
+        SyncBatchPasteKeyboardHook();
+#else
+        if (!_isPopupVisible)
+            UninstallKeyboardHook();
+#endif
+    }
 
 #if CLIPX_CLIPBOARD
     /// <summary>FIFO/LIFO：多选 Enter 入队（不立即粘贴），顶栏序号；目标应用内每次 Ctrl+V / Shift+Insert 松键出队并推进剪贴板。</summary>
@@ -1100,24 +1124,33 @@ public partial class PopupWindow : Window
         _ = TryPushClipboardQueueHeadAsync();
     }
 
+    /// <summary>批量队列推剪贴板时：已关模式、队列为空或队首已换则不得再覆盖系统剪贴板（避免 FIFO/LIFO 异步写回盖住用户刚复制的内容）。</summary>
+    private bool BatchQueueHeadStillThisEntry(ClipboardEntry item) =>
+        GetBatchMode() != BatchPasteQueueMode.Off
+        && _batchQueue.Count > 0
+        && ReferenceEquals(_batchQueue[0], item);
+
     /// <summary>仅写剪贴板为队首，不发按键；供入队后目标中 Ctrl+V / Shift+Insert 粘贴衔接。</summary>
     private async Task TryPushClipboardQueueHeadAsync()
     {
         await _queueClipboardPushLock.WaitAsync();
         try
         {
-            if (_batchQueue.Count == 0) return;
+            if (GetBatchMode() == BatchPasteQueueMode.Off || _batchQueue.Count == 0) return;
             var item = _batchQueue[0];
 
             _isSettingClipboard = true;
             try
             {
+                if (!BatchQueueHeadStillThisEntry(item)) return;
+
                 if (_hwnd != IntPtr.Zero)
                     Win32.TryEmptyClipboardAfterOpen(_hwnd);
 
                 var ok = false;
                 const int clipRetries = 8;
                 const int clipRetryDelayMs = 55;
+                Func<bool> queueCoherence = () => BatchQueueHeadStillThisEntry(item);
                 try
                 {
                     switch (item.Type)
@@ -1128,7 +1161,8 @@ public partial class PopupWindow : Window
                                 $"queueHead SetText len={item.TextContent?.Length ?? 0}",
                                 maxRetries: clipRetries,
                                 delayMs: clipRetryDelayMs,
-                                clipNudgeHwnd: _hwnd);
+                                clipNudgeHwnd: _hwnd,
+                                canContinueBeforeEachAttempt: queueCoherence);
                             break;
                         case EntryType.Image:
                         {
@@ -1149,9 +1183,10 @@ public partial class PopupWindow : Window
                                     $"queueHead SetImage {bi.PixelWidth}x{bi.PixelHeight}",
                                     maxRetries: clipRetries,
                                     delayMs: clipRetryDelayMs,
-                                    clipNudgeHwnd: _hwnd);
+                                    clipNudgeHwnd: _hwnd,
+                                    canContinueBeforeEachAttempt: queueCoherence);
                             }
-                            if (!ok && item.ImageData is { Length: > 0 })
+                            if (!ok && item.ImageData is { Length: > 0 } && BatchQueueHeadStillThisEntry(item))
                             {
                                 string? tmpPath = null;
                                 try
@@ -1167,7 +1202,8 @@ public partial class PopupWindow : Window
                                         "queueHead SetFileDropList imageFallback",
                                         maxRetries: clipRetries,
                                         delayMs: clipRetryDelayMs,
-                                        clipNudgeHwnd: _hwnd);
+                                        clipNudgeHwnd: _hwnd,
+                                        canContinueBeforeEachAttempt: queueCoherence);
                                     if (!ok && tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
                                 }
                                 catch (Exception ex)
@@ -1187,7 +1223,8 @@ public partial class PopupWindow : Window
                                 $"queueHead count={fl.Count}",
                                 maxRetries: clipRetries,
                                 delayMs: clipRetryDelayMs,
-                                clipNudgeHwnd: _hwnd);
+                                clipNudgeHwnd: _hwnd,
+                                canContinueBeforeEachAttempt: queueCoherence);
                             break;
                         }
                     }
@@ -1198,7 +1235,7 @@ public partial class PopupWindow : Window
                 }
 
                 ClipboardDiagnosticsLog.Write($"queueHead ok={ok}");
-                if (ok)
+                if (ok && BatchQueueHeadStillThisEntry(item))
                     await Task.Delay(4);
             }
             finally
@@ -1655,7 +1692,7 @@ public partial class PopupWindow : Window
 
     public void TogglePopup()
     {
-        if (_isPopupVisible) HidePopup();
+        if (_isPopupVisible) HidePopup(closingViaClipboardHotkey: true);
         else ShowPopup();
     }
 
@@ -1703,6 +1740,10 @@ public partial class PopupWindow : Window
         if (_displayItems.Count > 0)
             ItemsList.SelectedIndex = 0;
 
+        _awaitHotkeyAltChordCleanup = (_hotkeyModifiers & Win32.MOD_ALT) != 0;
+        _hotkeyAltChordCleanupDeadlineTick =
+            _awaitHotkeyAltChordCleanup ? Environment.TickCount64 + 750 : 0;
+
 #if CLIPX_CLIPBOARD
         SyncBatchPasteKeyboardHook();
 #else
@@ -1726,7 +1767,7 @@ public partial class PopupWindow : Window
         }
     }
 
-    private void HidePopup()
+    private void HidePopup(bool closingViaClipboardHotkey = false)
     {
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;
@@ -1753,10 +1794,26 @@ public partial class PopupWindow : Window
         _phraseEditEntry = null;
         _phraseEditBuffer = "";
         ClearPendingDelete();
+        if (closingViaClipboardHotkey && (_hotkeyModifiers & Win32.MOD_ALT) != 0)
+        {
+            _awaitHotkeyAltChordCleanup = true;
+            _hotkeyAltChordCleanupDeadlineTick = Environment.TickCount64 + 750;
+            _ctxAltAwaitRelease = false;
+            _ctxAltComboDuringRelease = false;
+            _ctxAltCloseMenuArmed = false;
+        }
+        else
+        {
+            _awaitHotkeyAltChordCleanup = false;
+            _hotkeyAltChordCleanupDeadlineTick = 0;
+        }
 #if CLIPX_CLIPBOARD
         SyncBatchPasteKeyboardHook();
 #else
-        UninstallKeyboardHook();
+        if (_awaitHotkeyAltChordCleanup)
+            InstallKeyboardHook();
+        else
+            UninstallKeyboardHook();
 #endif
         Hide();
     }
@@ -2150,7 +2207,7 @@ public partial class PopupWindow : Window
         Win32.GetCursorPos(out var cursor);
         if (Win32.WindowFromPoint(cursor) == _hwnd) return;
 
-        Dispatcher.BeginInvoke(HidePopup);
+        Dispatcher.BeginInvoke(() => HidePopup());
     }
 
     /// <summary>对话框成为前台后分层短等再读路径：先快试，读不到再逐段补等（总上限接近原先单次长等）。</summary>
@@ -3018,6 +3075,39 @@ public partial class PopupWindow : Window
     private static bool IsMenuAltVk(uint vk) =>
         vk == 0x12 || vk == 0xA4 || vk == 0xA5;
 
+    /// <summary>
+    /// 低级钩子里拦截物理 Alt KeyUp 后，注入 Ctrl Down → Ctrl Up → Alt Up（均带注入标志），
+    /// 供宿主将松键视为带 Ctrl 的收尾而非单独 Alt，避免 VS Code 等菜单栏抢焦点。
+    /// </summary>
+    private static void InjectSyntheticHotkeyAltChordCleanup(Win32.KBDLLHOOKSTRUCT kb)
+    {
+        uint ext = (kb.flags & 0x01) != 0 ? Win32.KEYEVENTF_EXTENDEDKEY : 0u;
+        var inputs = new Win32.INPUT[3];
+
+        inputs[0].type = Win32.INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = Win32.VK_CONTROL;
+        inputs[0].u.ki.wScan = 0;
+        inputs[0].u.ki.dwFlags = 0;
+        inputs[0].u.ki.time = 0;
+        inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
+
+        inputs[1].type = Win32.INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = Win32.VK_CONTROL;
+        inputs[1].u.ki.wScan = 0;
+        inputs[1].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        inputs[1].u.ki.time = 0;
+        inputs[1].u.ki.dwExtraInfo = IntPtr.Zero;
+
+        inputs[2].type = Win32.INPUT_KEYBOARD;
+        inputs[2].u.ki.wVk = (ushort)kb.vkCode;
+        inputs[2].u.ki.wScan = 0;
+        inputs[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP | ext;
+        inputs[2].u.ki.time = 0;
+        inputs[2].u.ki.dwExtraInfo = IntPtr.Zero;
+
+        Win32.SendInput(3, inputs, Marshal.SizeOf<Win32.INPUT>());
+    }
+
     private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0)
@@ -3063,11 +3153,36 @@ public partial class PopupWindow : Window
         }
 #endif
 
-        if (!_isPopupVisible)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
         // 面板未关闭时钩子仍会吃掉未识别的键；多段粘贴中间几次不走 HidePopup，SendInput 的 Shift+Insert 必须放行。
         if ((kb.flags & (Win32.LLKHF_INJECTED | Win32.LLKHF_LOWER_IL_INJECTED)) != 0)
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+        TryExpireHotkeyAltChordCleanupDeadline();
+
+        if (!_isPopupVisible && _awaitHotkeyAltChordCleanup)
+        {
+            if (_activeFileJumpPicker != null)
+                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+            if (isKeyUp && IsMenuAltVk(kb.vkCode) && !_ctxAltAwaitRelease)
+            {
+                _awaitHotkeyAltChordCleanup = false;
+                _hotkeyAltChordCleanupDeadlineTick = 0;
+                _ctxAltComboDuringRelease = false;
+                InjectSyntheticHotkeyAltChordCleanup(kb);
+#if CLIPX_CLIPBOARD
+                SyncBatchPasteKeyboardHook();
+#else
+                if (!_isPopupVisible)
+                    UninstallKeyboardHook();
+#endif
+                return (IntPtr)1;
+            }
+
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        }
+
+        if (!_isPopupVisible)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         if (_activeFileJumpPicker != null)
@@ -3077,6 +3192,15 @@ public partial class PopupWindow : Window
         {
             if (PhraseEditPopup.IsOpen)
                 return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+            if (_awaitHotkeyAltChordCleanup && !_ctxAltAwaitRelease)
+            {
+                _awaitHotkeyAltChordCleanup = false;
+                _hotkeyAltChordCleanupDeadlineTick = 0;
+                _ctxAltComboDuringRelease = false;
+                InjectSyntheticHotkeyAltChordCleanup(kb);
+                return (IntPtr)1;
+            }
 
             if (BatchMenuPopup.IsOpen)
             {
@@ -3250,8 +3374,11 @@ public partial class PopupWindow : Window
 
         if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !ContextPopup.IsOpen && !BatchMenuPopup.IsOpen)
         {
-            _ctxAltAwaitRelease = true;
-            _ctxAltComboDuringRelease = false;
+            if (!_awaitHotkeyAltChordCleanup)
+            {
+                _ctxAltAwaitRelease = true;
+                _ctxAltComboDuringRelease = false;
+            }
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
         }
 
@@ -3875,11 +4002,17 @@ public partial class PopupWindow : Window
         string logOp,
         int maxRetries = 2,
         int delayMs = 40,
-        IntPtr clipNudgeHwnd = default)
+        IntPtr clipNudgeHwnd = default,
+        Func<bool>? canContinueBeforeEachAttempt = null)
     {
         Exception? last = null;
         for (var i = 0; i < maxRetries; i++)
         {
+            if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+            {
+                ClipboardDiagnosticsLog.Write($"TrySetClipboard aborted coherence op={logOp} attempt={i + 1}");
+                return false;
+            }
             try
             {
                 Win32.CloseClipboard();
@@ -3894,6 +4027,11 @@ public partial class PopupWindow : Window
                 var hr = ex is COMException com ? $" hr=0x{(uint)com.HResult:X8}" : "";
                 ClipboardDiagnosticsLog.Write($"TrySetClipboard fail attempt={i + 1}/{maxRetries} op={logOp} {ex.GetType().Name}: {ex.Message}{hr}");
                 if (i >= maxRetries - 1) break;
+                if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+                {
+                    ClipboardDiagnosticsLog.Write($"TrySetClipboard aborted coherence before retry delay op={logOp}");
+                    return false;
+                }
                 if (IsClipboardCantOpen(ex) && clipNudgeHwnd != IntPtr.Zero && Win32.TryEmptyClipboardAfterOpen(clipNudgeHwnd))
                     ClipboardDiagnosticsLog.Write($"TrySetClipboard reNudge op={logOp} afterAttempt={i + 1}");
                 await Task.Delay(delayMs);
