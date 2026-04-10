@@ -31,6 +31,7 @@ public partial class SettingsWindow : Window
     private bool _pendingFileJumpAutoSyncOnReturn;
     private string _pendingModifierKey;
     private bool _pendingBatchPasteMergeText;
+    private bool _pendingBatchQueueAutoSwitchToNormalAfterQueueDone;
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
 
@@ -109,6 +110,9 @@ public partial class SettingsWindow : Window
 
         _pendingBatchPasteMergeText = settings.BatchPasteMergeText;
         BatchPasteMergeToggleText.Text = _pendingBatchPasteMergeText ? "开启" : "关闭";
+
+        _pendingBatchQueueAutoSwitchToNormalAfterQueueDone = settings.BatchQueueAutoSwitchToNormalAfterQueueDone;
+        BatchQueueAutoNormalToggleText.Text = _pendingBatchQueueAutoSwitchToNormalAfterQueueDone ? "开启" : "关闭";
 
         CustomFileDialogStore.RulesChanged += OnCustomFileDialogRulesChanged;
         Closed += SettingsWindow_OnClosed;
@@ -484,6 +488,12 @@ public partial class SettingsWindow : Window
         BatchPasteMergeToggleText.Text = _pendingBatchPasteMergeText ? "开启" : "关闭";
     }
 
+    private void BatchQueueAutoNormalCycle_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingBatchQueueAutoSwitchToNormalAfterQueueDone = !_pendingBatchQueueAutoSwitchToNormalAfterQueueDone;
+        BatchQueueAutoNormalToggleText.Text = _pendingBatchQueueAutoSwitchToNormalAfterQueueDone ? "开启" : "关闭";
+    }
+
     private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (OpacityValueText == null) return;
@@ -567,6 +577,7 @@ public partial class SettingsWindow : Window
         _settings.PreviewMaxLines = previewLines;
         _settings.PanelModifierKey = _pendingModifierKey;
         _settings.BatchPasteMergeText = _pendingBatchPasteMergeText;
+        _settings.BatchQueueAutoSwitchToNormalAfterQueueDone = _pendingBatchQueueAutoSwitchToNormalAfterQueueDone;
 
         DialogResult = true;
         Close();

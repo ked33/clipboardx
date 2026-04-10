@@ -35,6 +35,8 @@ public partial class PopupWindow : Window
 #if CLIPX_CLIPBOARD
     /// <summary>全局 Ctrl+V / Shift+Insert 松键出队防抖（毫秒，TickCount64）。</summary>
     private long _lastGlobalPasteQueueAdvanceTick;
+    /// <summary>FIFO/LIFO 下列队已贴完，等待下一次他处粘键后切回普通模式（<see cref="AppSettings.BatchQueueAutoSwitchToNormalAfterQueueDone"/>）。</summary>
+    private bool _batchQueueAwaitingNextPasteToSwitchOff;
     /// <summary>序列化「队列队首 → 剪贴板」写入，避免与监控钩交错或多路 TryPush 争用 OpenClipboard。</summary>
     private readonly SemaphoreSlim _queueClipboardPushLock = new(1, 1);
 #endif
@@ -899,6 +901,9 @@ public partial class PopupWindow : Window
     private void SetBatchPasteMode(BatchPasteQueueMode mode)
     {
         if (_appSettings == null) return;
+#if CLIPX_CLIPBOARD
+        _batchQueueAwaitingNextPasteToSwitchOff = false;
+#endif
         var prev = GetBatchMode();
         _appSettings.BatchPasteMode = mode.ToString();
         if (mode == BatchPasteQueueMode.Off)
@@ -1044,12 +1049,13 @@ public partial class PopupWindow : Window
     }
 
 #if CLIPX_CLIPBOARD
-    /// <summary>面板显示或 FIFO/LIFO 且队列非空时需 WH_KEYBOARD_LL（隐藏面板时仅靠此项收全局粘贴键）。</summary>
+    /// <summary>面板显示、FIFO/LIFO 且队列非空、或「队已贴完等下一次粘键切回普通」时需 WH_KEYBOARD_LL（隐藏面板时仅靠此项收全局粘贴键）。</summary>
     private void SyncBatchPasteKeyboardHook()
     {
         var need = _isPopupVisible
             || (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0)
-            || _awaitHotkeyAltChordCleanup;
+            || _awaitHotkeyAltChordCleanup
+            || _batchQueueAwaitingNextPasteToSwitchOff;
         if (need)
             InstallKeyboardHook();
         else
@@ -1103,6 +1109,16 @@ public partial class PopupWindow : Window
         RefreshFilter(0);
         SyncBatchPasteKeyboardHook();
         SchedulePushBatchQueueHeadIfChanged(headBefore, mode);
+        if (_batchQueue.Count > 0)
+            _batchQueueAwaitingNextPasteToSwitchOff = false;
+    }
+
+    private void MarkAwaitingBatchQueueNextPasteToSwitchToNormalIfEnabled()
+    {
+        var mode = GetBatchMode();
+        if (mode != BatchPasteQueueMode.Fifo && mode != BatchPasteQueueMode.Lifo) return;
+        if (!(_appSettings?.BatchQueueAutoSwitchToNormalAfterQueueDone ?? true)) return;
+        _batchQueueAwaitingNextPasteToSwitchOff = true;
     }
 
     private void TryAdvancePasteQueueAfterGlobalPaste()
@@ -1120,6 +1136,8 @@ public partial class PopupWindow : Window
         UpdateBatchOrderProperties();
         ReorderAllItemsQueueFirst();
         RefreshFilter(0);
+        if (_batchQueue.Count == 0 && (GetBatchMode() == BatchPasteQueueMode.Fifo || GetBatchMode() == BatchPasteQueueMode.Lifo))
+            MarkAwaitingBatchQueueNextPasteToSwitchToNormalIfEnabled();
         SyncBatchPasteKeyboardHook();
         _ = TryPushClipboardQueueHeadAsync();
     }
@@ -1291,6 +1309,8 @@ public partial class PopupWindow : Window
         ReorderAllItemsQueueFirst();
         SyncBatchPasteKeyboardHook();
         SchedulePushBatchQueueHeadIfChanged(headBefore, mode);
+        if (_batchQueue.Count > 0)
+            _batchQueueAwaitingNextPasteToSwitchOff = false;
 #endif
     }
 
@@ -1358,6 +1378,9 @@ public partial class PopupWindow : Window
         CloseBatchMenuNavUi();
         var list = _batchQueue.ToList();
         if (list.Count == 0) return;
+#if CLIPX_CLIPBOARD
+        var wasFifoOrLifo = GetBatchMode() is BatchPasteQueueMode.Fifo or BatchPasteQueueMode.Lifo;
+#endif
         _batchQueue.Clear();
         UpdateBatchOrderProperties();
         RefreshFilter(0);
@@ -1369,6 +1392,11 @@ public partial class PopupWindow : Window
             await RunOrderedPastesWithAdjacentTextMergeAsync(list, newlineAfterEachTextWhenCtrlEnter: false);
         else
             await RunSequentialPastesAsync(list);
+#if CLIPX_CLIPBOARD
+        if (wasFifoOrLifo && list.Count > 0 && (_appSettings?.BatchQueueAutoSwitchToNormalAfterQueueDone ?? true))
+            _batchQueueAwaitingNextPasteToSwitchOff = true;
+        SyncBatchPasteKeyboardHook();
+#endif
     }
 
     private void BatchMenu_PasteAll_Click(object sender, MouseButtonEventArgs e) => ActivateBatchPasteAll();
@@ -1422,6 +1450,8 @@ public partial class PopupWindow : Window
             return;
         }
 #if CLIPX_CLIPBOARD
+        if (_batchQueue.Count == 0)
+            MarkAwaitingBatchQueueNextPasteToSwitchToNormalIfEnabled();
         SyncBatchPasteKeyboardHook();
         if (_batchQueue.Count > 0)
             await TryPushClipboardQueueHeadAsync();
@@ -3137,15 +3167,24 @@ public partial class PopupWindow : Window
                 if (pasteChord)
                 {
                     var fg = Win32.GetForegroundWindow();
-                    if (fg != IntPtr.Zero && fg != _hwnd
-                        && GetBatchMode() != BatchPasteQueueMode.Off
-                        && _batchQueue.Count > 0)
+                    if (fg != IntPtr.Zero && fg != _hwnd)
                     {
                         long tick = Environment.TickCount64;
                         if (tick - _lastGlobalPasteQueueAdvanceTick > 120)
                         {
-                            _lastGlobalPasteQueueAdvanceTick = tick;
-                            Dispatcher.BeginInvoke(new Action(TryAdvancePasteQueueAfterGlobalPaste));
+                            if ((GetBatchMode() == BatchPasteQueueMode.Fifo || GetBatchMode() == BatchPasteQueueMode.Lifo)
+                                && _batchQueue.Count == 0
+                                && (_appSettings?.BatchQueueAutoSwitchToNormalAfterQueueDone ?? true)
+                                && _batchQueueAwaitingNextPasteToSwitchOff)
+                            {
+                                _lastGlobalPasteQueueAdvanceTick = tick;
+                                Dispatcher.BeginInvoke(() => SetBatchPasteMode(BatchPasteQueueMode.Off));
+                            }
+                            else if (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0)
+                            {
+                                _lastGlobalPasteQueueAdvanceTick = tick;
+                                Dispatcher.BeginInvoke(new Action(TryAdvancePasteQueueAfterGlobalPaste));
+                            }
                         }
                     }
                 }

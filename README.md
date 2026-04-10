@@ -231,7 +231,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.3.3"   # 与 csproj 同步后改这里
+$v = "1.3.4"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -291,6 +291,10 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.3.4
+
+- **剪贴板 · 批量队列**：**FIFO / LIFO** 下队列为空后，可在**下一次**他处粘贴键时**自动切回普通**模式（默认开启，设置中可关）；兼容旧键 **`FifoAutoSwitchToNormalAfterQueueDone`**
 
 ### v1.3.3
 

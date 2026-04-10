@@ -4,6 +4,12 @@
 
 格式依据 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 的常见写法；日期为发布日（与 tag 推送日一致即可）。
 
+## [1.3.4] - 2026-04-10
+
+### 剪贴板
+
+- **FIFO / LIFO**：队列在他处已全部贴完后，可在**下一次**他处 **Ctrl+V / Shift+Insert** 时**自动切回「普通」**批量模式（默认开启）；设置中可关闭，避免长期停留在队列模式；兼容旧配置键 **`FifoAutoSwitchToNormalAfterQueueDone`**
+
 ## [1.3.3] - 2026-04-09
 
 ### 剪贴板

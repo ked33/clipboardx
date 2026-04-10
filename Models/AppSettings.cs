@@ -80,6 +80,11 @@ public class AppSettings
     /// <summary>多选且条目全部为文本时，是否拼成一段一次写入剪贴板并粘贴（关则逐条粘贴，便于多步撤销）。</summary>
     public bool BatchPasteMergeText { get; set; } = true;
 
+    /// <summary>
+    /// FIFO / LIFO 下队列已贴完后，在<strong>下一次</strong>他处 Ctrl+V / Shift+Insert 时自动切回普通模式（避免长期停留在队列模式）。
+    /// </summary>
+    public bool BatchQueueAutoSwitchToNormalAfterQueueDone { get; set; } = true;
+
     public List<QuickPasteEntry> QuickPastes { get; set; } = new();
 
     /// <summary>Ctrl+G 跳转列表顶部展示的收藏目录（Phrase 为关键词/别名，供检索）。</summary>
@@ -161,6 +166,13 @@ public class AppSettings
                         settings.CheckUpdatesOnStartup = true;
                     if (!doc.RootElement.TryGetProperty(nameof(BatchPasteMergeText), out _))
                         settings.BatchPasteMergeText = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(BatchQueueAutoSwitchToNormalAfterQueueDone), out _))
+                    {
+                        if (doc.RootElement.TryGetProperty("FifoAutoSwitchToNormalAfterQueueDone", out var legacyFifo))
+                            settings.BatchQueueAutoSwitchToNormalAfterQueueDone = legacyFifo.ValueKind == JsonValueKind.True;
+                        else
+                            settings.BatchQueueAutoSwitchToNormalAfterQueueDone = true;
+                    }
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     return settings;
@@ -198,6 +210,13 @@ public class AppSettings
                         settings.CheckUpdatesOnStartup = true;
                     if (!doc.RootElement.TryGetProperty(nameof(BatchPasteMergeText), out _))
                         settings.BatchPasteMergeText = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(BatchQueueAutoSwitchToNormalAfterQueueDone), out _))
+                    {
+                        if (doc.RootElement.TryGetProperty("FifoAutoSwitchToNormalAfterQueueDone", out var legacyFifo))
+                            settings.BatchQueueAutoSwitchToNormalAfterQueueDone = legacyFifo.ValueKind == JsonValueKind.True;
+                        else
+                            settings.BatchQueueAutoSwitchToNormalAfterQueueDone = true;
+                    }
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     settings.Save();
@@ -247,6 +266,7 @@ public class AppSettings
         BatchModeCycleHotkeyModifiers = BatchModeCycleHotkeyModifiers,
         BatchModeCycleHotkeyKey = BatchModeCycleHotkeyKey,
         BatchPasteMergeText = BatchPasteMergeText,
+        BatchQueueAutoSwitchToNormalAfterQueueDone = BatchQueueAutoSwitchToNormalAfterQueueDone,
         QuickPastes = QuickPastes.Select(q => new QuickPasteEntry { Phrase = q.Phrase, Content = q.Content }).ToList(),
         FolderFavorites = FolderFavorites.Select(f => new FolderFavoriteEntry { Phrase = f.Phrase, Path = f.Path }).ToList(),
         LastFileDialogFolder = LastFileDialogFolder

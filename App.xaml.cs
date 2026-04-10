@@ -440,6 +440,7 @@ public partial class App : Application
             _settings.BatchModeCycleHotkeyModifiers = copy.BatchModeCycleHotkeyModifiers;
             _settings.BatchModeCycleHotkeyKey = copy.BatchModeCycleHotkeyKey;
             _settings.BatchPasteMergeText = copy.BatchPasteMergeText;
+            _settings.BatchQueueAutoSwitchToNormalAfterQueueDone = copy.BatchQueueAutoSwitchToNormalAfterQueueDone;
             StartupRegistration.Apply(_settings.RunAtStartup);
             _settings.Save();
             _popup?.ApplySettings(_settings);
