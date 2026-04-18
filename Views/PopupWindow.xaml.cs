@@ -4561,10 +4561,9 @@ public partial class PopupWindow : Window
 
     private void PositionEntryPreviewPopup()
     {
-        EntryPreviewPopup.PlacementTarget = MainBorder;
-
         if (MainBorder.ActualWidth <= 0 || !IsVisible)
         {
+            EntryPreviewPopup.PlacementTarget = MainBorder;
             EntryPreviewPopup.Placement = PlacementMode.Right;
             EntryPreviewPopup.HorizontalOffset = 10;
             EntryPreviewPopup.VerticalOffset = 0;
@@ -4576,6 +4575,7 @@ public partial class PopupWindow : Window
         // 开始菜单/搜索等 Shell 前台：主面板固定在屏幕一侧，预览改到主窗口正下方，避免横向弹出压住开始菜单。
         if (IsShellForegroundWindow(Win32.GetForegroundWindow()))
         {
+            EntryPreviewPopup.PlacementTarget = MainBorder;
             EntryPreviewPopup.Placement = PlacementMode.Bottom;
             EntryPreviewPopup.HorizontalOffset = 0;
             EntryPreviewPopup.VerticalOffset = gap;
@@ -4613,6 +4613,27 @@ public partial class PopupWindow : Window
         double spaceLeft = mainLeftEdge - wa.Left;
         bool placeRight = spaceRight >= desiredW + gap || spaceRight >= spaceLeft;
 
+        // 相对选中行略偏上（数值可按观感微调）
+        const double previewVerticalNudgeUp = 24;
+
+        ListBoxItem? selectedRow = null;
+        if (ItemsList.SelectedItem != null
+            && ItemsList.ItemContainerGenerator.ContainerFromItem(ItemsList.SelectedItem) is ListBoxItem row
+            && row.IsVisible)
+            selectedRow = row;
+
+        // 右侧有空间时：以选中行容器为锚点。Popup.Right 的目标原点为「行首右上角」，预览顶与行顶对齐；
+        // 若仍用 MainBorder 顶边 + (itemTop - topLeft)，在列表中部选中时易与触边重算叠加，观感像对齐到行中部。
+        if (placeRight && selectedRow != null)
+        {
+            EntryPreviewPopup.PlacementTarget = selectedRow;
+            EntryPreviewPopup.Placement = PlacementMode.Right;
+            EntryPreviewPopup.HorizontalOffset = gap;
+            EntryPreviewPopup.VerticalOffset = -previewVerticalNudgeUp;
+            return;
+        }
+
+        EntryPreviewPopup.PlacementTarget = MainBorder;
         if (placeRight)
         {
             EntryPreviewPopup.Placement = PlacementMode.Right;
@@ -4625,12 +4646,10 @@ public partial class PopupWindow : Window
         }
 
         double verticalOffset = 0;
-        if (ItemsList.SelectedItem != null
-            && ItemsList.ItemContainerGenerator.ContainerFromItem(ItemsList.SelectedItem) is ListBoxItem item
-            && item.IsVisible)
+        if (selectedRow != null)
         {
-            var itemTop = item.PointToScreen(new System.Windows.Point(0, 0));
-            verticalOffset = itemTop.Y - topLeft.Y;
+            var itemTop = selectedRow.PointToScreen(new System.Windows.Point(0, 0));
+            verticalOffset = itemTop.Y - topLeft.Y - previewVerticalNudgeUp;
         }
 
         double minOff = wa.Top + 8 - topLeft.Y;
@@ -5518,6 +5537,21 @@ public partial class PopupWindow : Window
         int idx = _displayItems.IndexOf(entry);
         if (idx < 0) return;
 
+        // 双击才粘贴：必须在 Preview 内处理；若此处已 Handled，冒泡阶段收不到 MouseLeftButtonDown，ClickCount 也无意义。
+        if (_appSettings?.PasteRequiresDoubleClick == true && e.ClickCount == 2)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 || (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                return;
+            ItemsList.SelectedItems.Clear();
+            ItemsList.SelectedItems.Add(entry);
+            _mouseShiftAnchorIndex = idx;
+            _selectionRangeAnchor = idx;
+            _selectionCursorEnd = idx;
+            e.Handled = true;
+            PasteSelectedItem();
+            return;
+        }
+
         bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 
@@ -5566,6 +5600,7 @@ public partial class PopupWindow : Window
         if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 || (Keyboard.Modifiers & ModifierKeys.Control) != 0)
             return;
         if (ItemsList.SelectedItems.Count != 1) return;
+        if (_appSettings?.PasteRequiresDoubleClick == true) return;
         var element = e.OriginalSource as DependencyObject;
         while (element != null && element is not ListBoxItem)
             element = VisualTreeHelper.GetParent(element);

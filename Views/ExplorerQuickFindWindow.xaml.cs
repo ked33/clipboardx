@@ -1,12 +1,10 @@
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
-using System.Windows.Navigation;
 using Brush = System.Windows.Media.Brush;
 
 namespace ClipboardManager;
@@ -202,19 +200,6 @@ public partial class ExplorerQuickFindWindow : Window
 
         Left = pt.X * dipScale;
         Top = (pt.Y + 24) * dipScale;
-    }
-
-    private void FindxGitHub_RequestNavigate(object sender, RequestNavigateEventArgs e)
-    {
-        e.Handled = true;
-        try
-        {
-            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-        }
-        catch
-        {
-            /* ignore */
-        }
     }
 
     private void ResultsList_OnPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -13,7 +12,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Navigation;
 using System.Windows.Threading;
 using Media = System.Windows.Media;
 using Orientation = System.Windows.Controls.Orientation;
@@ -579,7 +577,7 @@ public partial class FileDialogJumpPickerWindow : Window
             foreach (var p in _everythingFolderPaths.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
             {
                 if (!seenPaths.Add(p)) continue;
-                _displayRows.Add(new FileJumpPickerRow("findx", p, false));
+                _displayRows.Add(new FileJumpPickerRow("everything", p, false));
             }
         }
 
@@ -678,20 +676,7 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         var m = PanelModifierDisplayName(_settings.PanelModifierKey);
         FooterHintsText.Text =
-            $"{m}+1~9 跳转 · ↑↓ 选择 · ←→ 翻页 · Tab · 字母 findx · 右键收藏 · Esc 取消/清除";
-    }
-
-    private void FindxGitHub_RequestNavigate(object sender, RequestNavigateEventArgs e)
-    {
-        e.Handled = true;
-        try
-        {
-            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-        }
-        catch
-        {
-            /* ignore */
-        }
+            $"{m}+1~9 跳转 · ↑↓ 选择 · ←→ 翻页 · Tab · 字母 everything · 右键收藏 · Esc 取消/清除";
     }
 
     private static string PanelModifierDisplayName(string key) => key switch
@@ -822,7 +807,7 @@ public partial class FileDialogJumpPickerWindow : Window
             _dockFollowTimer.Tick += (_, _) => DockFollowTick();
             _dockFollowTimer.Start();
         }
-        // 弹出后聚焦列表，字母键才能进 findx 筛选；焦点回到文件对话框编辑框时仍由 KeyboardFocusIsExternalEditable 把按键让给对话框。
+        // 弹出后聚焦列表，字母键才能进 everything 筛选；焦点回到文件对话框编辑框时仍由 KeyboardFocusIsExternalEditable 把按键让给对话框。
         Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.Input);
         Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.ApplicationIdle);
     }
@@ -971,7 +956,7 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         if (ItemsList.SelectedItem is not FileJumpPickerRow row || row.IsFavorite) return;
         var def = GuessPhraseFromPath(row.Path);
-        var phrase = PromptSimpleText("收藏关键词（用于 findx 筛选）", def);
+        var phrase = PromptSimpleText("收藏关键词（用于 everything 筛选）", def);
         if (phrase == null) return;
         phrase = phrase.Trim();
         if (string.IsNullOrEmpty(phrase)) phrase = def;

@@ -58,6 +58,9 @@ public class AppSettings
     public string PopupPosition { get; set; } = "Caret";
     public double PopupOpacity { get; set; } = 1.0;
     public bool HideOnSameAppClick { get; set; } = true;
+
+    /// <summary>开启时：单击列表仅选中、不粘贴，双击才粘贴；关闭时：单击即粘贴（默认）。</summary>
+    public bool PasteRequiresDoubleClick { get; set; } = false;
     /// <summary>登录 Windows 时自动启动本程序（默认开启）。</summary>
     public bool RunAtStartup { get; set; } = true;
 
@@ -343,6 +346,7 @@ public class AppSettings
         PopupPosition = PopupPosition,
         PopupOpacity = PopupOpacity,
         HideOnSameAppClick = HideOnSameAppClick,
+        PasteRequiresDoubleClick = PasteRequiresDoubleClick,
         RunAtStartup = RunAtStartup,
         RunAsAdministrator = RunAsAdministrator,
         PasteSimulationMode = PasteSimulationMode,

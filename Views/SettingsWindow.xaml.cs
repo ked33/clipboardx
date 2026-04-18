@@ -46,6 +46,7 @@ public partial class SettingsWindow : Window
     private bool _isRecordingPageScrollUpHotkey;
     private bool _isRecordingPageScrollDownHotkey;
     private string _pendingPasteSimulationMode = PasteSimulationModes.CtrlV;
+    private bool _pendingPasteRequiresDoubleClick;
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
 
@@ -152,6 +153,9 @@ public partial class SettingsWindow : Window
 
         _pendingPasteSimulationMode = PasteSimulationModes.Normalize(settings.PasteSimulationMode);
         PasteSimulationText.Text = PasteSimulationDisplayName(_pendingPasteSimulationMode);
+
+        _pendingPasteRequiresDoubleClick = settings.PasteRequiresDoubleClick;
+        PasteDoubleClickText.Text = _pendingPasteRequiresDoubleClick ? "开启" : "关闭";
 
         _pendingBatchPasteMergeText = settings.BatchPasteMergeText;
         BatchPasteMergeToggleText.Text = _pendingBatchPasteMergeText ? "开启" : "关闭";
@@ -645,6 +649,12 @@ public partial class SettingsWindow : Window
         PasteSimulationText.Text = PasteSimulationDisplayName(_pendingPasteSimulationMode);
     }
 
+    private void PasteDoubleClickCycle_Click(object sender, MouseButtonEventArgs e)
+    {
+        _pendingPasteRequiresDoubleClick = !_pendingPasteRequiresDoubleClick;
+        PasteDoubleClickText.Text = _pendingPasteRequiresDoubleClick ? "开启" : "关闭";
+    }
+
     private void ModifierCycle_Click(object sender, RoutedEventArgs e)
     {
         int idx = Array.IndexOf(ModifierOptions, _pendingModifierKey);
@@ -800,6 +810,7 @@ public partial class SettingsWindow : Window
         AppSettings.NormalizePopupPanelSettings(_settings);
         _settings.PanelModifierKey = _pendingModifierKey;
         _settings.PasteSimulationMode = PasteSimulationModes.Normalize(_pendingPasteSimulationMode);
+        _settings.PasteRequiresDoubleClick = _pendingPasteRequiresDoubleClick;
         _settings.BatchPasteMergeText = _pendingBatchPasteMergeText;
         _settings.BatchQueueAutoSwitchToNormalAfterQueueDone = _pendingBatchQueueAutoSwitchToNormalAfterQueueDone;
 

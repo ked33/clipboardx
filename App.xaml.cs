@@ -479,6 +479,7 @@ public partial class App : Application
             _settings.PopupPosition = copy.PopupPosition;
             _settings.PopupOpacity = copy.PopupOpacity;
             _settings.HideOnSameAppClick = copy.HideOnSameAppClick;
+            _settings.PasteRequiresDoubleClick = copy.PasteRequiresDoubleClick;
             _settings.RunAtStartup = copy.RunAtStartup;
             _settings.RunAsAdministrator = copy.RunAsAdministrator;
             _settings.CheckUpdatesOnStartup = copy.CheckUpdatesOnStartup;
