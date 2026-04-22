@@ -1,6 +1,7 @@
 <Window x:Class="ClipboardManager.PopupWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ClipboardManager"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -178,32 +179,18 @@
                                 </Border>
 
                                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="4,0,8,0">
-                                    <TextBlock Text="{Binding Preview}"
-                                               Foreground="{DynamicResource PrimaryText}" FontSize="13"
-                                               TextTrimming="CharacterEllipsis">
-                                        <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
-                                                        <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
-                                    <TextBlock Text="{Binding SubInfo}"
-                                               Foreground="{DynamicResource MutedText}" FontSize="10"
-                                               Margin="0,2,0,0" Visibility="{Binding SubInfoVisibility}">
-                                        <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsPendingDelete}" Value="True">
-                                                        <Setter Property="TextDecorations" Value="{x:Static TextDecorations.Strikethrough}"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding Preview}"
+                                                                   HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                   FontSizeOverride="13"
+                                                                   UseMutedBase="False"
+                                                                   IsStrikeThrough="{Binding IsPendingDelete}"/>
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding SubInfo, TargetNullValue=''}"
+                                                                   HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                   FontSizeOverride="10"
+                                                                   UseMutedBase="True"
+                                                                   Margin="0,2,0,0"
+                                                                   Visibility="{Binding SubInfoVisibility}"
+                                                                   IsStrikeThrough="{Binding IsPendingDelete}"/>
                                 </StackPanel>
 
                                 <TextBlock Grid.Column="3" Text="{Binding TimeAgo}"

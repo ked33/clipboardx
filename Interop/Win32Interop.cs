@@ -85,6 +85,10 @@ internal static class Win32
         return GetWindowText(hWnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
     }
 
+    /// <summary>控件子窗口 ID（如对话框内按钮 IDOK=1、IDCANCEL=2）。顶层窗口常为 0。</summary>
+    [DllImport("user32.dll")]
+    public static extern int GetDlgCtrlID(IntPtr hwnd);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 

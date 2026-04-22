@@ -234,7 +234,7 @@ internal static class EverythingIpc
 
             Everything_SetRequestFlags(EverythingRequestFullPathAndFileName);
             Everything_SetMax((uint)Math.Clamp(maxResults, 1, 10_000));
-            // 搜索串由 ExplorerQuickFind 使用 parent:"路径" 构造；勿依赖 SetMatchPath，亦勿再使用「C:\ 关键词」形式（IPC 实测恒 0 条）
+            // 搜索串由 ExplorerQuickFind 使用 parent: / path: 限定；勿依赖 SetMatchPath，亦勿再使用「C:\ 关键词」形式（IPC 实测恒 0 条）
 
             var buf = searchExpression.AsSpan();
             if (buf.Length > SearchFragmentCapacity)

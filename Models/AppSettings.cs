@@ -25,12 +25,17 @@ public class AppSettings
     /// <summary>Mouse：跳转列表跟随鼠标附近；Dialog：紧贴文件对话框并随窗口移动。</summary>
     public string FileJumpPickerFollowMode { get; set; } = FileJumpPickerFollowModes.Dialog;
 
-    /// <summary>多候选时是否弹出跳转列表（关则直跳最优路径）；快捷键与 FileJumpPickerOpenWhenDialogForeground 共用。</summary>
+    /// <summary>
+    /// 历史字段：是否弹出跳转列表。当前版本与 <see cref="FileJumpPickerOpenWhenDialogForeground"/> 同义，
+    /// 保存时强制与之相等；读取旧配置若不一致则取 OR。保留以兼容旧 settings.json。
+    /// </summary>
     public bool FileJumpPickerAutoPopup { get; set; } = true;
 
     /// <summary>
-    /// 检测到文件对话框到前台时是否自动执行跳转逻辑（无需快捷键）；具体弹列表还是直跳由 FileJumpPickerAutoPopup 决定。
-    /// 开启时跳转列表 UI 始终贴靠文件对话框（与 FileJumpPickerFollowMode 的「跟随鼠标」无关）；快捷键打开的列表仍遵跟随模式。
+    /// 「对话框打开时自动弹出列表」：检测到文件对话框成为前台时（含焦点首次进框兜底），自动采集候选并弹出跳转列表。
+    /// 开启时跳转列表（含 Ctrl+G 弹出）始终贴对话框；关闭时按 <see cref="FileJumpPickerFollowMode"/>。
+    /// 同一对话框 root 仅自动弹一次；手动 Ctrl+G 不受影响。与 <see cref="FileJumpAutoOnFirstClick"/> 同时开
+    /// 时为 A 方案：先直跳最佳路径再弹列表，用户可在列表内再换。
     /// </summary>
     public bool FileJumpPickerOpenWhenDialogForeground { get; set; } = true;
 
@@ -49,10 +54,13 @@ public class AppSettings
     public bool EnableShellNavigateInject { get; set; } = true;
 
     /// <summary>
-    /// 打开/保存对话框成为前台后，第一次在该对话框内按下鼠标左键时，自动跳转到候选路径列表的第一条（与 Ctrl+G 列表顺序一致）；
-    /// 每个对话框顶层窗口存活期内仅成功自动跳转一次。
+    /// 「自动跳转到最佳路径」：对话框成为前台时直接跳到候选首条（不依赖快捷键、不依赖点击）。
+    /// 同一对话框 root 仅成功一次。配合内部低级鼠标钩兜底：部分宿主（如微信）不发前台事件时，
+    /// 会在对话框内首次左键时触发等价直跳；钩子仅在本开关开启时武装。
+    /// 与 <see cref="FileJumpPickerOpenWhenDialogForeground"/> 同时开时为 A 方案：先直跳再弹列表。
+    /// 字段名沿用历史 (First Click)，语义已升级为"自动跳转"，保留名以兼容旧 settings.json。
     /// </summary>
-    public bool FileJumpAutoOnFirstClick { get; set; } = true;
+    public bool FileJumpAutoOnFirstClick { get; set; } = false;
 
     public string Theme { get; set; } = "System";
     public string PopupPosition { get; set; } = "Caret";
@@ -119,8 +127,55 @@ public class AppSettings
     /// <summary>Ctrl+G 跳转列表顶部展示的收藏目录（Phrase 为关键词/别名，供检索）。</summary>
     public List<FolderFavoriteEntry> FolderFavorites { get; set; } = new();
 
-    /// <summary>最近一次在「打开/保存」对话框中记录到的文件夹，供 Ctrl+G 跳转。</summary>
+    /// <summary>最近一次在「打开/保存」对话框中记录到的文件夹（与 <see cref="RecentFileDialogFolders"/> 首项同步），供兼容旧逻辑。</summary>
     public string LastFileDialogFolder { get; set; } = "";
+
+    /// <summary>最近通过「确定/打开/保存」等确认操作记录的路径，最多 3 条（新的在前）。</summary>
+    public List<string> RecentFileDialogFolders { get; set; } = new();
+
+    /// <summary>在公共对话框内确认当前目录后加入常用列表（去重、LRU、最多 3 条），并同步 <see cref="LastFileDialogFolder"/> 后保存。</summary>
+    public void PushRecentFileDialogFolder(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return;
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(folder.Trim());
+        }
+        catch
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Directory.Exists(normalized)) return;
+        }
+        catch
+        {
+            return;
+        }
+
+        RecentFileDialogFolders ??= new List<string>();
+        RecentFileDialogFolders.RemoveAll(p =>
+        {
+            if (string.IsNullOrWhiteSpace(p)) return true;
+            try
+            {
+                return string.Equals(Path.GetFullPath(p.Trim()), normalized, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        });
+        RecentFileDialogFolders.Insert(0, normalized);
+        while (RecentFileDialogFolders.Count > 3)
+            RecentFileDialogFolders.RemoveAt(RecentFileDialogFolders.Count - 1);
+
+        LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
+        Save();
+    }
 
     /// <summary>资源管理器非地址栏焦点时直接键入：用 Everything 限定当前文件夹检索并弹出结果（需本机运行 Everything）。默认开启，见设置「实验性功能」。</summary>
     public bool ExplorerEverythingQuickFindEnabled { get; set; } = true;
@@ -217,7 +272,7 @@ public class AppSettings
                     if (!doc.RootElement.TryGetProperty(nameof(EnableShellNavigateInject), out _))
                         settings.EnableShellNavigateInject = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpAutoOnFirstClick), out _))
-                        settings.FileJumpAutoOnFirstClick = true;
+                        settings.FileJumpAutoOnFirstClick = false;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerFollowMode), out _))
                     {
                         if (doc.RootElement.TryGetProperty("FileJumpPickerDockBesideDialog", out var dockEl)
@@ -231,6 +286,7 @@ public class AppSettings
                         settings.FileJumpPickerAutoPopup = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerOpenWhenDialogForeground), out _))
                         settings.FileJumpPickerOpenWhenDialogForeground = true;
+                    NormalizeFileJumpDialogAutoOpen(settings);
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpAutoSyncOnReturn), out _))
                         settings.FileJumpAutoSyncOnReturn = true;
                     if (!doc.RootElement.TryGetProperty(nameof(CheckUpdatesOnStartup), out _))
@@ -252,6 +308,7 @@ public class AppSettings
                         settings.FileJumpPickerEverythingFolderSearch = true;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
+                    MigrateRecentFileDialogFolders(settings);
                     settings.PasteSimulationMode = PasteSimulationModes.Normalize(settings.PasteSimulationMode);
                     NormalizePopupPanelSettings(settings);
                     return settings;
@@ -271,7 +328,7 @@ public class AppSettings
                     if (!doc.RootElement.TryGetProperty(nameof(EnableShellNavigateInject), out _))
                         settings.EnableShellNavigateInject = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpAutoOnFirstClick), out _))
-                        settings.FileJumpAutoOnFirstClick = true;
+                        settings.FileJumpAutoOnFirstClick = false;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerFollowMode), out _))
                     {
                         if (doc.RootElement.TryGetProperty("FileJumpPickerDockBesideDialog", out var dockEl)
@@ -285,6 +342,7 @@ public class AppSettings
                         settings.FileJumpPickerAutoPopup = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerOpenWhenDialogForeground), out _))
                         settings.FileJumpPickerOpenWhenDialogForeground = true;
+                    NormalizeFileJumpDialogAutoOpen(settings);
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpAutoSyncOnReturn), out _))
                         settings.FileJumpAutoSyncOnReturn = true;
                     if (!doc.RootElement.TryGetProperty(nameof(CheckUpdatesOnStartup), out _))
@@ -306,6 +364,7 @@ public class AppSettings
                         settings.FileJumpPickerEverythingFolderSearch = true;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
+                    MigrateRecentFileDialogFolders(settings);
                     settings.PasteSimulationMode = PasteSimulationModes.Normalize(settings.PasteSimulationMode);
                     NormalizePopupPanelSettings(settings);
                     settings.Save();
@@ -315,6 +374,36 @@ public class AppSettings
         }
         catch { }
         return new();
+    }
+
+    /// <summary>
+    /// 将历史字段 <see cref="FileJumpPickerAutoPopup"/> 与 <see cref="FileJumpPickerOpenWhenDialogForeground"/> 拉齐：
+    /// 当前版本两者同义（均代表"对话框打开时自动弹出列表"），任一为 true 即两者都置 true，避免历史 JSON 留下不一致。
+    /// </summary>
+    private static void NormalizeFileJumpDialogAutoOpen(AppSettings settings)
+    {
+        var openList = settings.FileJumpPickerOpenWhenDialogForeground || settings.FileJumpPickerAutoPopup;
+        settings.FileJumpPickerOpenWhenDialogForeground = openList;
+        settings.FileJumpPickerAutoPopup = openList;
+    }
+
+    private static void MigrateRecentFileDialogFolders(AppSettings settings)
+    {
+        settings.RecentFileDialogFolders ??= new List<string>();
+        settings.RecentFileDialogFolders.RemoveAll(string.IsNullOrWhiteSpace);
+        if (settings.RecentFileDialogFolders.Count == 0 && !string.IsNullOrWhiteSpace(settings.LastFileDialogFolder))
+        {
+            try
+            {
+                var n = Path.GetFullPath(settings.LastFileDialogFolder.Trim());
+                if (Directory.Exists(n))
+                    settings.RecentFileDialogFolders.Add(n);
+            }
+            catch { /* ignore */ }
+        }
+
+        if (settings.RecentFileDialogFolders.Count > 0)
+            settings.LastFileDialogFolder = settings.RecentFileDialogFolders[0].Trim();
     }
 
     public void Save()
@@ -369,6 +458,7 @@ public class AppSettings
         QuickPastes = QuickPastes.Select(q => new QuickPasteEntry { Phrase = q.Phrase, Content = q.Content }).ToList(),
         FolderFavorites = FolderFavorites.Select(f => new FolderFavoriteEntry { Phrase = f.Phrase, Path = f.Path }).ToList(),
         LastFileDialogFolder = LastFileDialogFolder,
+        RecentFileDialogFolders = RecentFileDialogFolders.ToList(),
         ExplorerEverythingQuickFindEnabled = ExplorerEverythingQuickFindEnabled,
         ExplorerEverythingQuickFindMaxResults = ExplorerEverythingQuickFindMaxResults,
         FileJumpPickerEverythingFolderSearch = FileJumpPickerEverythingFolderSearch,

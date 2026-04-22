@@ -101,15 +101,20 @@
                                            FontSize="14" Width="26" TextAlignment="Center"
                                            VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0">
-                                    <TextBlock Text="{Binding PreviewLine}" FontSize="12"
-                                               Foreground="{DynamicResource SecondaryText}"
-                                               TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Text="{Binding PathLine}" FontSize="13"
-                                               Foreground="{DynamicResource PrimaryText}"
-                                               TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-                                    <TextBlock Text="{Binding SubInfo}" FontSize="10"
-                                               Foreground="{DynamicResource MutedText}" Margin="0,2,0,0"
-                                               Visibility="{Binding SubInfoVisibility}"/>
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding PreviewLine}"
+                                                                   HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                   FontSizeOverride="12"
+                                                                   UseMutedBase="True"/>
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding PathLine}"
+                                                                   HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                   FontSizeOverride="13"
+                                                                   UseMutedBase="False"/>
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding SubInfo, TargetNullValue=''}"
+                                                                   HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                   FontSizeOverride="10"
+                                                                   UseMutedBase="True"
+                                                                   Margin="0,2,0,0"
+                                                                   Visibility="{Binding SubInfoVisibility}"/>
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>

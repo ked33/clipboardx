@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
 using Brush = System.Windows.Media.Brush;
 
 namespace ClipboardManager;
@@ -19,6 +20,7 @@ public partial class ExplorerQuickFindWindow : Window
     private Brush? _primaryBrush;
     private Brush? _secondaryBrush;
     private Brush? _mutedBrush;
+    private Brush? _highlightBrush;
 
     private const string DefaultHint = "↑↓ 选择 · ←→ 翻页 · Ctrl+N 快选 · Enter 定位 · Esc 关闭";
 
@@ -34,6 +36,17 @@ public partial class ExplorerQuickFindWindow : Window
         _primaryBrush ??= (Brush)FindResource("PrimaryText");
         _secondaryBrush ??= (Brush)FindResource("SecondaryText");
         _mutedBrush ??= (Brush)FindResource("MutedText");
+        if (_highlightBrush == null)
+        {
+            try
+            {
+                _highlightBrush = (Brush)FindResource("AccentBg");
+            }
+            catch
+            {
+                _highlightBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x13, 0x94, 0x93));
+            }
+        }
     }
 
     public event EventHandler? UserClosed;
@@ -41,18 +54,38 @@ public partial class ExplorerQuickFindWindow : Window
     /// <summary>用户在列表中点击了某项，携带完整路径。</summary>
     public event Action<string>? ItemActivated;
 
-    public void SetQueryText(string folderLabel, string typing)
+    public void SetQueryText(string folderLabel, string typing, string? highlightNeedle = null)
     {
         FolderLabel.Text = folderLabel;
-        TypingLabel.Text = string.IsNullOrEmpty(typing) ? " " : typing;
+        TypingLabel.Inlines.Clear();
+        if (string.IsNullOrEmpty(typing))
+        {
+            TypingLabel.Inlines.Add(new Run(" "));
+            return;
+        }
+
+        CacheBrushes();
+        SearchHighlightInlines.Append(
+            TypingLabel.Inlines,
+            typing,
+            highlightNeedle ?? typing,
+            _primaryBrush!,
+            _highlightBrush!,
+            14,
+            FontWeights.SemiBold);
     }
 
-    public void SetResults(IReadOnlyList<QuickFindResultItem> items, string? status, string? countLine = null)
+    public void SetResults(
+        IReadOnlyList<QuickFindResultItem> items,
+        string? status,
+        string? countLine = null,
+        string? highlightNeedle = null)
     {
         CacheBrushes();
         var primary = _primaryBrush!;
         var secondary = _secondaryBrush!;
         var muted = _mutedBrush!;
+        var highlight = _highlightBrush!;
 
         ResultsList.Items.Clear();
 
@@ -70,16 +103,13 @@ public partial class ExplorerQuickFindWindow : Window
                 tb.Inlines.Add(new Run($"{idx + 1} ") { Foreground = muted, FontSize = 10 });
 
             tb.Inlines.Add(new Run(item.IsDirectory ? "\uD83D\uDCC1 " : "\uD83D\uDCC4 ") { FontSize = 12 });
-            tb.Inlines.Add(new Run(item.FileName) { Foreground = primary, FontSize = 13 });
+            SearchHighlightInlines.Append(tb.Inlines, item.FileName, highlightNeedle, primary, highlight, 13, FontWeights.Normal);
 
             if (!string.IsNullOrEmpty(item.RelativePath)
                 && !string.Equals(item.RelativePath, item.FileName, StringComparison.OrdinalIgnoreCase))
             {
-                tb.Inlines.Add(new Run($"  {item.RelativePath}")
-                {
-                    Foreground = secondary,
-                    FontSize = 11,
-                });
+                tb.Inlines.Add(new Run("  ") { Foreground = secondary, FontSize = 11 });
+                SearchHighlightInlines.Append(tb.Inlines, item.RelativePath, highlightNeedle, secondary, highlight, 11, FontWeights.Normal);
             }
 
             if (item.IsGlobalMatch)

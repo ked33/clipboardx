@@ -74,6 +74,13 @@ public partial class PopupWindow : Window
     private static IntPtr s_fileJumpAutoMouseHookForNext;
     private static PopupWindow? s_fileJumpAutoMouseOwner;
 
+#if CLIPX_FILEJUMP
+    /// <summary>在系统「确定/保存/打开」等主按钮上点击时记录当前文件夹；与弹窗、首点自动跳转钩独立。</summary>
+    private static readonly Win32.LowLevelMouseProc s_fileJumpPersistMouseThunk = StaticFileJumpPersistMouseProc;
+    private static IntPtr s_fileJumpPersistMouseHookForNext;
+    private static PopupWindow? s_fileJumpPersistMouseOwner;
+#endif
+
     /// <summary>SetWinEventHook 同样会把托管委托交给系统；须用静态委托避免 Unhook 后晚到回调撞上已回收的实例委托。</summary>
     private static readonly Win32.WinEventDelegate s_popupWinEventThunk = StaticWinEventProc;
     private static PopupWindow? s_popupWinEventOwner;
@@ -85,6 +92,20 @@ public partial class PopupWindow : Window
     private bool _sequentialPasteHold;
     private bool _isPopupVisible;
     private string _searchText = "";
+
+    /// <summary>列表内 <see cref="SearchHighlightTextBlock"/> 绑定用：当前搜索词（Trim），随 <see cref="UpdateSearchUI"/> 更新。</summary>
+    public static readonly DependencyProperty HighlightSearchQueryProperty = DependencyProperty.Register(
+        nameof(HighlightSearchQuery),
+        typeof(string),
+        typeof(PopupWindow),
+        new PropertyMetadata(""));
+
+    public string HighlightSearchQuery
+    {
+        get => (string)GetValue(HighlightSearchQueryProperty);
+        set => SetValue(HighlightSearchQueryProperty, value ?? "");
+    }
+
     private EntryType? _typeFilter;
     private bool _quickPhraseOnly;
     private ClipboardEntry? _contextEntry;
@@ -199,6 +220,9 @@ public partial class PopupWindow : Window
     private uint _fileJumpHotkeyKey;
 
     private IntPtr _fileJumpAutoMouseHook;
+#if CLIPX_FILEJUMP
+    private IntPtr _fileJumpPersistMouseHook;
+#endif
     /// <summary>待监听左键的文件对话框 HWND（与前台识别一致）。</summary>
     private IntPtr _fileJumpAutoArmedDialog;
     /// <summary>同上对话框的顶层 HWND，用于判断点击是否落在该对话框 UI 内。</summary>
@@ -298,6 +322,7 @@ public partial class PopupWindow : Window
 #endif
 #if CLIPX_FILEJUMP
         InstallForegroundWatcher();
+        InstallFileJumpPersistFolderHook();
 #endif
         UpdateEmptyState();
         UpdateBatchHeaderUi();
@@ -306,6 +331,7 @@ public partial class PopupWindow : Window
     public void Cleanup()
     {
 #if CLIPX_FILEJUMP
+        UninstallFileJumpPersistFolderHook();
         DisarmFileJumpClickToNavigate();
         _fileJumpAutoFirstJumpDoneRoot = IntPtr.Zero;
         _fileJumpAutoOpenDebounceTimer?.Stop();
@@ -983,7 +1009,24 @@ public partial class PopupWindow : Window
     {
         var hasSearch = _searchText.Length > 0;
         SearchBarPanel.Visibility = hasSearch ? Visibility.Visible : Visibility.Collapsed;
-        SearchTextBlock.Text = _searchText;
+        SetCurrentValue(HighlightSearchQueryProperty, _searchText.Trim());
+        if (hasSearch)
+        {
+            var primary = TryFindResource("PrimaryText") as Brush ?? System.Windows.Media.Brushes.White;
+            var accent = TryFindResource("AccentBg") as Brush ?? System.Windows.Media.Brushes.Teal;
+            SearchTextBlock.Inlines.Clear();
+            SearchHighlightInlines.Append(
+                SearchTextBlock.Inlines,
+                _searchText,
+                _searchText.Trim(),
+                primary,
+                accent,
+                13,
+                FontWeights.Normal);
+        }
+        else
+            SearchTextBlock.Inlines.Clear();
+
         SearchCountText.Text = hasSearch ? $"{_displayItems.Count} 条结果" : "";
     }
 
@@ -2535,6 +2578,17 @@ public partial class PopupWindow : Window
         return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
     }
 
+#if CLIPX_FILEJUMP
+    private static IntPtr StaticFileJumpPersistMouseProc(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        var owner = s_fileJumpPersistMouseOwner;
+        var hhk = s_fileJumpPersistMouseHookForNext;
+        if (owner != null && hhk != IntPtr.Zero)
+            return owner.FileJumpPersistMouseHookCallback(nCode, wParam, lParam);
+        return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
+    }
+#endif
+
     private void InstallKeyboardHook()
     {
         if (_keyboardHook != IntPtr.Zero) return;
@@ -2831,18 +2885,33 @@ public partial class PopupWindow : Window
     /// </summary>
     private void OnGlobalFocusMaybeFileDialog(IntPtr hwnd)
     {
-        if (_appSettings == null || !_appSettings.FileJumpPickerOpenWhenDialogForeground) return;
+        if (_appSettings == null) return;
         if (hwnd == IntPtr.Zero) return;
         if (!FileDialogJumpHelper.QuickMayBeUnderFileDialog(hwnd)) return;
 
         var dlg = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
         if (dlg == IntPtr.Zero) return;
 
-        ScheduleSnapshotFolderFromDialog(dlg);
+        var runOpenList = _appSettings.FileJumpPickerOpenWhenDialogForeground;
+        var runAutoNavigate = _appSettings.FileJumpAutoOnFirstClick;
+        if (!runOpenList && !runAutoNavigate)
+            return;
+
+        if (runOpenList || runAutoNavigate)
+            ScheduleSnapshotFolderFromDialog(dlg);
+
         Dispatcher.BeginInvoke(() =>
         {
-            TryAutoOpenFileJumpPickerWhenDialogForeground(dlg);
-            UpdateFileJumpClickToNavigateArm(dlg);
+            // 「自动弹列表」开：走列表路径（开+开时该路径内部会先直跳再弹列表）。
+            // 仅「自动跳转」开：走纯直跳路径；同时武装鼠标钩，覆盖无前台事件的宿主。
+            if (runOpenList)
+                TryAutoOpenFileJumpPickerWhenDialogForeground(dlg);
+            else if (runAutoNavigate)
+                TryAutoNavigateBestPathWhenDialogForeground(dlg);
+
+            // 仅在「自动跳转」开 + 「自动弹列表」关时才需要鼠标钩兜底（弹列表已由前台事件触发，无需点击）。
+            if (runAutoNavigate && !runOpenList)
+                UpdateFileJumpClickToNavigateArm(dlg);
         });
     }
 
@@ -2862,7 +2931,14 @@ public partial class PopupWindow : Window
         {
             var prevForAutoSync = prev;
             ScheduleSnapshotFolderFromDialog(dialogForForeground);
-            Dispatcher.BeginInvoke(() => TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground));
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_appSettings == null) return;
+                if (_appSettings.FileJumpPickerOpenWhenDialogForeground)
+                    TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground);
+                else if (_appSettings.FileJumpAutoOnFirstClick)
+                    TryAutoNavigateBestPathWhenDialogForeground(dialogForForeground);
+            });
             Dispatcher.BeginInvoke(() => TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync));
         }
 
@@ -2939,11 +3015,23 @@ public partial class PopupWindow : Window
 
     private void RememberLastDialogFolder(string folder)
     {
-        if (_appSettings == null || string.IsNullOrWhiteSpace(folder)) return;
-        var normalized = folder.Trim();
-        if (normalized == _appSettings.LastFileDialogFolder) return;
-        _appSettings.LastFileDialogFolder = normalized;
-        _appSettings.Save();
+        if (_appSettings == null) return;
+        _appSettings.PushRecentFileDialogFolder(folder);
+    }
+
+    private static List<string>? CopyRecentForJump(AppSettings? settings)
+    {
+        if (settings?.RecentFileDialogFolders == null || settings.RecentFileDialogFolders.Count == 0)
+            return null;
+        var list = new List<string>();
+        foreach (var p in settings.RecentFileDialogFolders)
+        {
+            if (string.IsNullOrWhiteSpace(p)) continue;
+            list.Add(p.Trim());
+            if (list.Count >= 3) break;
+        }
+
+        return list.Count > 0 ? list : null;
     }
 
     /// <summary>
@@ -3002,6 +3090,7 @@ public partial class PopupWindow : Window
         var gen = _fileJumpHotkeyCollectGen;
         var dialogHwndCapture = dialogHwnd;
         var memCapture = mem;
+        var recentCapture = CopyRecentForJump(_appSettings);
         var allowCapture = allowShellInject;
 
         void StaCollect()
@@ -3012,7 +3101,8 @@ public partial class PopupWindow : Window
             {
                 quick = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture,
                     skipAlternateUiAutomation: true, stopAfterCandidateCount: 2,
-                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen);
+                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen,
+                    recentFolders: recentCapture);
             }
             catch (Exception ex)
             {
@@ -3031,7 +3121,7 @@ public partial class PopupWindow : Window
                         dialogHwndCapture,
                         quick,
                         allowCapture,
-                        afterPickerAssigned: () => StartFullCollectForHotkey(dialogHwndCapture, memCapture, gen));
+                        afterPickerAssigned: () => StartFullCollectForHotkey(dialogHwndCapture, memCapture, recentCapture, gen));
                 }, DispatcherPriority.Input);
                 return;
             }
@@ -3042,7 +3132,8 @@ public partial class PopupWindow : Window
             try
             {
                 candidates = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture,
-                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen);
+                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen,
+                    recentFolders: recentCapture);
             }
             catch (Exception ex)
             {
@@ -3082,13 +3173,6 @@ public partial class PopupWindow : Window
         if (candidates.Count == 0)
         {
             ClearFileJumpDoubleTapState();
-            return;
-        }
-
-        if (candidates.Count == 1)
-        {
-            ClearFileJumpDoubleTapState();
-            FileDialogJumpHelper.TryNavigateToFolder(dialogHwnd, candidates[0].Path, allowShellInject);
             return;
         }
 
@@ -3133,7 +3217,7 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>完整采集（含 UIA）完成后刷新已打开的跳转列表。</summary>
-    private void StartFullCollectForHotkey(IntPtr dialogHwnd, string? mem, int gen)
+    private void StartFullCollectForHotkey(IntPtr dialogHwnd, string? mem, List<string>? recentFolders, int gen)
     {
         Task.Run(() =>
         {
@@ -3141,7 +3225,8 @@ public partial class PopupWindow : Window
             try
             {
                 full = FileManagerPathCollector.CollectCandidates(dialogHwnd, mem,
-                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen);
+                    shouldAbort: () => gen != _fileJumpHotkeyCollectGen,
+                    recentFolders: recentFolders);
             }
             catch (Exception ex)
             {
@@ -3158,7 +3243,8 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>完整采集（含 UIA）完成后刷新已打开的跳转列表。</summary>
-    private void StartFullCollectForAutoForeground(IntPtr dialogHwnd, string? mem, int gen)
+    private void StartFullCollectForAutoForeground(IntPtr dialogHwnd, string? mem, List<string>? recentFolders,
+        int gen)
     {
         Task.Run(() =>
         {
@@ -3166,7 +3252,8 @@ public partial class PopupWindow : Window
             try
             {
                 full = FileManagerPathCollector.CollectCandidates(dialogHwnd, mem,
-                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen);
+                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen,
+                    recentFolders: recentFolders);
             }
             catch (Exception ex)
             {
@@ -3239,7 +3326,7 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>
-    /// 对话框成为前台并经过短延时后：自动弹出跳转列表（多候选）或直跳单一路径。
+    /// 对话框成为前台并经过短延时后：按设置自动弹出跳转列表或直跳最优路径（与 FileJumpPickerAutoPopup 一致，含仅 1 条候选）。
     /// </summary>
     private void TryAutoOpenFileJumpPickerWhenDialogForegroundAfterDebounce(IntPtr foregroundHwnd)
     {
@@ -3273,6 +3360,7 @@ public partial class PopupWindow : Window
         var dialogHwndCapture = dialogHwnd;
         var dialogRootCapture = dialogRoot;
         var memCapture = mem;
+        var recentCapture = CopyRecentForJump(_appSettings);
         var allowCapture = allowShellInject;
 
         void StaCollect()
@@ -3283,7 +3371,8 @@ public partial class PopupWindow : Window
             {
                 quick = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture,
                     skipAlternateUiAutomation: true, stopAfterCandidateCount: 2,
-                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen);
+                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen,
+                    recentFolders: recentCapture);
             }
             catch (Exception ex)
             {
@@ -3304,7 +3393,7 @@ public partial class PopupWindow : Window
                         quick,
                         allowCapture,
                         afterPickerAssigned: () =>
-                            StartFullCollectForAutoForeground(dialogHwndCapture, memCapture, gen));
+                            StartFullCollectForAutoForeground(dialogHwndCapture, memCapture, recentCapture, gen));
                 }, DispatcherPriority.Input);
                 return;
             }
@@ -3315,7 +3404,8 @@ public partial class PopupWindow : Window
             try
             {
                 candidates = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, memCapture,
-                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen);
+                    shouldAbort: () => gen != _fileJumpAutoForegroundCollectGen,
+                    recentFolders: recentCapture);
             }
             catch (Exception ex)
             {
@@ -3363,23 +3453,96 @@ public partial class PopupWindow : Window
         if (candidates.Count == 0)
             return;
 
-        if (candidates.Count == 1)
-        {
-            _fileJumpAutoOpenPickerDoneRoot = dialogRootNow;
-            FileDialogJumpHelper.TryNavigateToFolder(dialogHwnd, candidates[0].Path, allowShellInject);
-            return;
-        }
-
         var prefer = PreferCandidateIndex(dialogHwnd, candidates);
         _fileJumpAutoOpenPickerDoneRoot = dialogRootNow;
-        if (!_appSettings.FileJumpPickerAutoPopup)
+
+        // A 方案：「自动跳转到最佳路径」与「自动弹出列表」可叠加 ——
+        // 弹出列表的同时立刻直跳首条，用户能在列表里再换。
+        var autoNavigate = _appSettings.FileJumpAutoOnFirstClick;
+        if (autoNavigate)
         {
             FileDialogJumpHelper.TryNavigateToFolder(dialogHwnd, candidates[prefer].Path, allowShellInject);
-            return;
+            _fileJumpAutoFirstJumpDoneRoot = dialogRootNow;
+            DisarmFileJumpClickToNavigate();
         }
 
         ScheduleFileJumpPickerOpen(dialogHwnd, candidates.ToList(), prefer, armHotkeyDoubleTap: false, allowShellInject,
             autoForegroundStickyMode: true, afterPickerAssigned);
+    }
+
+    /// <summary>
+    /// 「自动跳转到最佳路径」开 + 「自动弹列表」关：对话框到前台后采集候选并直跳首条，不弹列表。
+    /// 同一对话框 root 仅成功一次。配合 <see cref="UpdateFileJumpClickToNavigateArm"/> 的鼠标钩兜底。
+    /// </summary>
+    private void TryAutoNavigateBestPathWhenDialogForeground(IntPtr foregroundHwnd)
+    {
+        if (_appSettings == null) return;
+        if (_appSettings.FileJumpPickerOpenWhenDialogForeground) return; // 该路径仅用于纯直跳
+        if (!_appSettings.FileJumpAutoOnFirstClick) return;
+        if (foregroundHwnd == IntPtr.Zero) return;
+
+        if (_fileJumpAutoFirstJumpDoneRoot != IntPtr.Zero
+            && !Win32.IsWindow(_fileJumpAutoFirstJumpDoneRoot))
+            _fileJumpAutoFirstJumpDoneRoot = IntPtr.Zero;
+
+        var fgNow = Win32.GetForegroundWindow();
+        var dialogHwnd = ResolveFileJumpTargetHwndInternal(fgNow);
+        if (dialogHwnd == IntPtr.Zero) return;
+
+        var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
+        if (dialogRoot == IntPtr.Zero) return;
+        if (dialogRoot == _fileJumpAutoFirstJumpDoneRoot) return;
+        if (!IsForegroundFocusOnFileDialogRoot(dialogRoot)) return;
+
+        var mem = _appSettings.LastFileDialogFolder?.Trim();
+        var allowShellInject = _appSettings.EnableShellNavigateInject;
+        var recentCapture = CopyRecentForJump(_appSettings);
+        var dialogHwndCapture = dialogHwnd;
+        var dialogRootCapture = dialogRoot;
+
+        void StaCollect()
+        {
+            List<FileJumpCandidate> candidates;
+            try
+            {
+                candidates = FileManagerPathCollector.CollectCandidates(dialogHwndCapture, mem,
+                    recentFolders: recentCapture);
+            }
+            catch (Exception ex)
+            {
+                ShellNavigateLog.Write("filejump", "CollectCandidates (auto navigate fg): " + ex);
+                candidates = new List<FileJumpCandidate>();
+            }
+
+            if (candidates.Count == 0) return;
+
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_appSettings == null) return;
+                if (_appSettings.FileJumpPickerOpenWhenDialogForeground) return;
+                if (!_appSettings.FileJumpAutoOnFirstClick) return;
+                if (!Win32.IsWindow(dialogHwndCapture)) return;
+                var rootNow = Win32.GetAncestor(dialogHwndCapture, Win32.GA_ROOT);
+                if (rootNow == IntPtr.Zero || rootNow != dialogRootCapture) return;
+                if (rootNow == _fileJumpAutoFirstJumpDoneRoot) return;
+                if (!IsForegroundFocusOnFileDialogRoot(rootNow)) return;
+
+                var prefer = PreferCandidateIndex(dialogHwndCapture, candidates);
+                if (FileDialogJumpHelper.TryNavigateToFolder(dialogHwndCapture, candidates[prefer].Path, allowShellInject))
+                {
+                    _fileJumpAutoFirstJumpDoneRoot = rootNow;
+                    DisarmFileJumpClickToNavigate();
+                }
+            }, DispatcherPriority.Normal);
+        }
+
+        var th = new Thread(StaCollect)
+        {
+            IsBackground = true,
+            Name = "ClipboardX-FileJump-AutoNav-Collect",
+        };
+        th.SetApartmentState(ApartmentState.STA);
+        th.Start();
     }
 
     #region 切回对话框自动同步路径
@@ -3472,6 +3635,8 @@ public partial class PopupWindow : Window
             ? preferredExternalFolder
             : _appSettings.LastFileDialogFolder?.Trim();
 
+        var recentCapture = CopyRecentForJump(_appSettings);
+
         unchecked { _fileJumpAutoSyncCollectGen++; }
         var gen = _fileJumpAutoSyncCollectGen;
         var dialogCapture = dialogHwnd;
@@ -3482,7 +3647,8 @@ public partial class PopupWindow : Window
             List<FileJumpCandidate> candidates;
             try
             {
-                candidates = FileManagerPathCollector.CollectCandidates(dialogCapture, mem);
+                candidates = FileManagerPathCollector.CollectCandidates(dialogCapture, mem,
+                    recentFolders: recentCapture);
             }
             catch (Exception ex)
             {
@@ -3779,6 +3945,66 @@ public partial class PopupWindow : Window
         s_fileJumpAutoMouseHookForNext = _fileJumpAutoMouseHook;
     }
 
+#if CLIPX_FILEJUMP
+    private void InstallFileJumpPersistFolderHook()
+    {
+        if (_fileJumpPersistMouseHook != IntPtr.Zero) return;
+        s_fileJumpPersistMouseOwner = this;
+        _fileJumpPersistMouseHook = Win32.SetWindowsHookEx(
+            Win32.WH_MOUSE_LL, s_fileJumpPersistMouseThunk, Win32.GetModuleHandle(null), 0);
+        s_fileJumpPersistMouseHookForNext = _fileJumpPersistMouseHook;
+    }
+
+    private void UninstallFileJumpPersistFolderHook()
+    {
+        if (_fileJumpPersistMouseHook != IntPtr.Zero)
+        {
+            Win32.UnhookWindowsHookEx(_fileJumpPersistMouseHook);
+            _fileJumpPersistMouseHook = IntPtr.Zero;
+        }
+
+        if (s_fileJumpPersistMouseOwner == this)
+        {
+            s_fileJumpPersistMouseOwner = null;
+            s_fileJumpPersistMouseHookForNext = IntPtr.Zero;
+        }
+    }
+
+    private IntPtr FileJumpPersistMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0
+            && _appSettings != null
+            && wParam.ToInt32() == Win32.WM_LBUTTONDOWN)
+        {
+            var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
+            if (FileDialogConfirmClick.TryResolveDialogOnPrimaryConfirmClick(info.pt, out var dialogHwnd))
+            {
+                var dlgCapture = dialogHwnd;
+                Dispatcher.BeginInvoke(new Action(() => TryPersistRecentFolderAfterPrimaryClick(dlgCapture)),
+                    DispatcherPriority.Send);
+            }
+        }
+
+        return Win32.CallNextHookEx(_fileJumpPersistMouseHook, nCode, wParam, lParam);
+    }
+
+    private void TryPersistRecentFolderAfterPrimaryClick(IntPtr dialogHwnd)
+    {
+        try
+        {
+            if (_appSettings == null) return;
+            if (dialogHwnd == IntPtr.Zero || !Win32.IsWindow(dialogHwnd)) return;
+            if (!FileDialogJumpHelper.TryReadCurrentFolder(dialogHwnd, out var folder)
+                || string.IsNullOrEmpty(folder)) return;
+            RememberLastDialogFolder(folder);
+        }
+        catch (Exception ex)
+        {
+            ShellNavigateLog.Write("filejump", "TryPersistRecentFolderAfterPrimaryClick: " + ex);
+        }
+    }
+#endif
+
     private IntPtr FileJumpAutoMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0
@@ -3806,6 +4032,14 @@ public partial class PopupWindow : Window
     private void UpdateFileJumpClickToNavigateArm(IntPtr foregroundHwnd)
     {
         if (_appSettings == null || !_appSettings.FileJumpAutoOnFirstClick)
+        {
+            DisarmFileJumpClickToNavigate();
+            return;
+        }
+
+        // 「对话框打开时自动弹出列表」开启时，前台事件已经会触发自动弹列表/直跳，不需要再装低级鼠标钩兜底；
+        // 装钩会让全局鼠标消息绕一次 UI 线程，体感卡顿。仅在纯「自动跳转到最佳路径」+ 弹列表关闭时才需要兜底。
+        if (_appSettings.FileJumpPickerOpenWhenDialogForeground)
         {
             DisarmFileJumpClickToNavigate();
             return;
@@ -3872,7 +4106,9 @@ public partial class PopupWindow : Window
                 return;
 
             var mem = _appSettings.LastFileDialogFolder?.Trim();
-            var candidates = FileManagerPathCollector.CollectCandidates(dlg, mem);
+            var recentCapture = CopyRecentForJump(_appSettings);
+            var candidates = FileManagerPathCollector.CollectCandidates(dlg, mem,
+                recentFolders: recentCapture);
             if (candidates.Count == 0) return;
 
             var doneRoot = Win32.GetAncestor(dlg, Win32.GA_ROOT);
@@ -4958,6 +5194,8 @@ public partial class PopupWindow : Window
         bool sendNewlineAfterTextWhenCtrlEnterBatch = false)
     {
         _pasteInProgress = true;
+        // 单次粘贴成功后会改为 true，让 finally 跳过同步清标志，由后台定时器在回波窗口结束后清。
+        bool deferPasteFlagToTimer = false;
         try
         {
         ClearPendingDelete();
@@ -4996,14 +5234,18 @@ public partial class PopupWindow : Window
         var noSegmentDelays = sequentialSegmentIndex >= 0;
         if (!noSegmentDelays)
         {
+            // 焦点切回后等待目标进程消息泵处理一轮；以前的较大值是为兼容个别拖慢的 OLE 富文本场景，
+            // 实测 99% 的小文本场景下根本无需等待，零延时即可成功；只在大文本/图片上保留延长。
+            // 早期还多做了一次 Dispatcher.InvokeAsync(Background) 让步，但 await Task.Delay 本身已经让步过，
+            // 再额外排队一次到 UI 队列只会让点击响应更晚一帧（~16ms 起），故移除。
             var focusSettleMs = item.Type switch
             {
-                EntryType.Text => textLen > 12000 ? 150 : textLen > 4000 ? 120 : 70,
-                EntryType.Image => hugeClipboardImage ? 220 : 160,
-                _ => 50
+                EntryType.Text => textLen > 12000 ? 100 : textLen > 4000 ? 50 : 0,
+                EntryType.Image => hugeClipboardImage ? 160 : 90,
+                _ => 15
             };
-            await Task.Delay(focusSettleMs);
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+            if (focusSettleMs > 0)
+                await Task.Delay(focusSettleMs);
             ClipboardDiagnosticsLog.Write($"paste focusSettleMs={focusSettleMs} after Hide+SetForegroundAggressive");
         }
         else
@@ -5129,24 +5371,33 @@ public partial class PopupWindow : Window
         {
             if (!noSegmentDelays)
             {
-                var prePasteDelayMs = item.Type == EntryType.Image ? 85 : 45;
-                await Task.Delay(prePasteDelayMs);
+                // 写完剪贴板到发送 Ctrl+V 之间，只有 OLE 图像需要等一拍让 IDataObject 真正落盘；
+                // 文本/文件路径下立即 SendInput 即可，避免「按下到看见粘贴出来」之间多出一帧延迟。
+                var prePasteDelayMs = item.Type == EntryType.Image ? 50 : 0;
+                if (prePasteDelayMs > 0)
+                    await Task.Delay(prePasteDelayMs);
             }
 
             SendPasteToTarget();
 
-            // 连续粘贴：整轮结束后再 TailSettle；段间另有 SequentialInterSegmentDelayMs。单次粘贴保留回波窗口。
+            // 连续粘贴：整轮结束后再 TailSettle；段间另有 SequentialInterSegmentDelayMs。
+            // 单次粘贴：以前同步 await 600ms 回波窗口，导致「按完按钮要等一下」的卡顿；
+            // 改为后台定时器在 _pasteInProgress 上挡回波，方法立即返回不阻塞调用方。
             if (!noSegmentDelays)
             {
                 const int postEchoMs = 600;
-                await Task.Delay(postEchoMs);
-                ClipboardDiagnosticsLog.Write($"paste post-echo suppression window elapsed (ms={postEchoMs})");
+                deferPasteFlagToTimer = true;
+                _ = Task.Delay(postEchoMs).ContinueWith(_ =>
+                {
+                    if (!_sequentialPasteHold) _pasteInProgress = false;
+                    ClipboardDiagnosticsLog.Write($"paste post-echo suppression window elapsed (ms={postEchoMs})");
+                }, TaskScheduler.Default);
             }
         }
         }
         finally
         {
-            if (!_sequentialPasteHold)
+            if (!_sequentialPasteHold && !deferPasteFlagToTimer)
                 _pasteInProgress = false;
         }
     }
@@ -5509,10 +5760,9 @@ public partial class PopupWindow : Window
     {
         if (e.ChangedButton == MouseButton.Middle)
         {
-            var elementM = e.OriginalSource as DependencyObject;
-            while (elementM != null && elementM is not ListBoxItem)
-                elementM = VisualTreeHelper.GetParent(elementM);
-            if (elementM is not ListBoxItem lbiM || lbiM.DataContext is not ClipboardEntry entryM) return;
+            if (e.OriginalSource is not DependencyObject srcM) return;
+            if (ItemsList.ContainerFromElement(srcM) is not ListBoxItem lbiM || lbiM.DataContext is not ClipboardEntry entryM)
+                return;
 
             ItemsList.SelectedItem = entryM;
             ItemsList.ScrollIntoView(entryM);
@@ -5529,10 +5779,9 @@ public partial class PopupWindow : Window
 
         if (e.ChangedButton != MouseButton.Left) return;
 
-        var element = e.OriginalSource as DependencyObject;
-        while (element != null && element is not ListBoxItem)
-            element = VisualTreeHelper.GetParent(element);
-        if (element is not ListBoxItem lbi || lbi.DataContext is not ClipboardEntry entry) return;
+        if (e.OriginalSource is not DependencyObject src) return;
+        if (ItemsList.ContainerFromElement(src) is not ListBoxItem lbi || lbi.DataContext is not ClipboardEntry entry)
+            return;
 
         int idx = _displayItems.IndexOf(entry);
         if (idx < 0) return;
@@ -5601,10 +5850,8 @@ public partial class PopupWindow : Window
             return;
         if (ItemsList.SelectedItems.Count != 1) return;
         if (_appSettings?.PasteRequiresDoubleClick == true) return;
-        var element = e.OriginalSource as DependencyObject;
-        while (element != null && element is not ListBoxItem)
-            element = VisualTreeHelper.GetParent(element);
-        if (element is ListBoxItem lbi && lbi.DataContext is ClipboardEntry sel)
+        if (e.OriginalSource is not DependencyObject srcUp) return;
+        if (ItemsList.ContainerFromElement(srcUp) is ListBoxItem lbi && lbi.DataContext is ClipboardEntry sel)
         {
             ItemsList.SelectedItem = sel;
             PasteSelectedItem();
@@ -5613,10 +5860,8 @@ public partial class PopupWindow : Window
 
     private void ItemsList_PreviewMouseRightUp(object sender, MouseButtonEventArgs e)
     {
-        var element = e.OriginalSource as DependencyObject;
-        while (element != null && element is not ListBoxItem)
-            element = VisualTreeHelper.GetParent(element);
-        if (element is ListBoxItem lbi && lbi.DataContext is ClipboardEntry entry)
+        if (e.OriginalSource is not DependencyObject srcR) return;
+        if (ItemsList.ContainerFromElement(srcR) is ListBoxItem lbi && lbi.DataContext is ClipboardEntry entry)
         {
             SyncContextMenuForEntry(entry);
             ContextPopup.Placement = PlacementMode.Mouse;

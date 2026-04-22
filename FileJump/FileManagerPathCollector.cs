@@ -89,12 +89,14 @@ internal static class FileManagerPathCollector
         return TryGetFolderForManagerHwnd(root);
     }
 
-    /// <summary>按 Z 序遍历顶层窗口，收集各文件管理器当前路径；末尾可附加「记忆路径」。</summary>
+    /// <summary>按 Z 序遍历顶层窗口，收集各文件管理器当前路径；末尾可附加「常用路径」。</summary>
     /// <param name="skipAlternateUiAutomation">为 true 时跳过白名单第三方管理器的 UIA 树扫描（可快一个数量级），用于先弹出跳转列表再异步补全。</param>
     /// <param name="stopAfterCandidateCount">大于 0 时，在「去重后的候选条数」达到该值后不再遍历剩余顶层窗口（用于快速先开列表，完整列表由后续全量采集补全）。</param>
     /// <param name="shouldAbort">若返回 true 则立即停止顶层窗口遍历（用于采集世代过期时中止长循环）。</param>
+    /// <param name="recentFolders">最近确认的目录（最多 3 条）；优先于单独的 <paramref name="memoryFolder"/>。</param>
     public static List<FileJumpCandidate> CollectCandidates(IntPtr dialogHwnd, string? memoryFolder, int zDelta = 2,
-        bool skipAlternateUiAutomation = false, int stopAfterCandidateCount = 0, Func<bool>? shouldAbort = null)
+        bool skipAlternateUiAutomation = false, int stopAfterCandidateCount = 0, Func<bool>? shouldAbort = null,
+        IReadOnlyList<string>? recentFolders = null)
     {
         var exeByPid = new Dictionary<uint, string>();
         var list = new List<FileJumpCandidate>();
@@ -113,13 +115,33 @@ internal static class FileManagerPathCollector
             catch { /* ignore */ }
         }
 
+        void AppendFavoriteFolders()
+        {
+            if (recentFolders != null && recentFolders.Count > 0)
+            {
+                var idx = 1;
+                foreach (var raw in recentFolders)
+                {
+                    if (idx > 3) break;
+                    if (string.IsNullOrWhiteSpace(raw))
+                        continue;
+                    Add($"常用路径{idx}", raw.Trim());
+                    idx++;
+                }
+
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(memoryFolder))
+                Add("常用路径1", memoryFolder.Trim());
+        }
+
         if (TryGetZOrderLinkedFolder(dialogHwnd, zDelta) is { } zHint)
             Add("Z 序推测", zHint);
 
         if (stopAfterCandidateCount > 0 && list.Count >= stopAfterCandidateCount)
         {
-            if (!string.IsNullOrWhiteSpace(memoryFolder))
-                Add("记忆路径", memoryFolder);
+            AppendFavoriteFolders();
             return list;
         }
 
@@ -188,8 +210,7 @@ internal static class FileManagerPathCollector
                 break;
         }
 
-        if (!string.IsNullOrWhiteSpace(memoryFolder))
-            Add("记忆路径", memoryFolder);
+        AppendFavoriteFolders();
 
         return list;
     }

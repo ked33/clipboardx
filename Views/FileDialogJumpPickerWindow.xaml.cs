@@ -63,6 +63,20 @@ public partial class FileDialogJumpPickerWindow : Window
     private int _pendingPhysY;
     private bool _snappedPhysicalOnce;
     private string _searchText = "";
+
+    /// <summary>列表内搜索高亮绑定用：当前检索词（Trim）。</summary>
+    public static readonly DependencyProperty HighlightSearchQueryProperty = DependencyProperty.Register(
+        nameof(HighlightSearchQuery),
+        typeof(string),
+        typeof(FileDialogJumpPickerWindow),
+        new PropertyMetadata(""));
+
+    public string HighlightSearchQuery
+    {
+        get => (string)GetValue(HighlightSearchQueryProperty);
+        set => SetValue(HighlightSearchQueryProperty, value ?? "");
+    }
+
     private bool _favoritesOnly;
     private int _firstVisibleIndex;
 
@@ -95,9 +109,11 @@ public partial class FileDialogJumpPickerWindow : Window
         _mouseScreenY = mouseScreenY;
         _settings = settings;
         _autoForegroundStickyMode = autoForegroundStickyMode;
-        // 由「对话框到前台自动执行」打开时始终贴靠文件窗；快捷键打开的遵「跟随对话框/鼠标」
+        // 「对话框打开时自动弹出列表」开启时所有跳转列表（含 Ctrl+G）强制贴对话框；
+        // 关闭时按用户「跟随对话框/鼠标」。autoForegroundStickyMode 自身就是自动弹出，必须贴。
         _dockBesideDialog = fileDialogOwnerHwnd != IntPtr.Zero
                             && (autoForegroundStickyMode
+                                || settings.FileJumpPickerOpenWhenDialogForeground
                                 || FileJumpPickerFollowModes.IsDialog(settings.FileJumpPickerFollowMode));
         _collectorSnapshot = collectorItems.ToList();
 
@@ -624,11 +640,13 @@ public partial class FileDialogJumpPickerWindow : Window
         var tok = _everythingQueryCts.Token;
         var maxResults = Math.Clamp(_settings.ExplorerEverythingQuickFindMaxResults, 1, 2000);
 
+        // 早期 debounce 写到 140ms，对「换一段输入再按 Tab/字母」的交互而言体感很重。
+        // Everything IPC 文件夹检索单次开销通常 <10ms，节流 40ms 足以合并连按又不感知卡顿。
         _ = Task.Run(() =>
         {
             try
             {
-                if (tok.WaitHandle.WaitOne(140)) return;
+                if (tok.WaitHandle.WaitOne(40)) return;
                 if (gen != _everythingQueryGen) return;
 
                 var list = new List<string>();
@@ -668,7 +686,24 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         var has = _searchText.Length > 0;
         SearchBarPanel.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
-        SearchTextBlock.Text = _searchText;
+        SetCurrentValue(HighlightSearchQueryProperty, _searchText.Trim());
+        if (has)
+        {
+            var primary = TryFindResource("PrimaryText") as Media.Brush ?? Media.Brushes.White;
+            var accent = TryFindResource("AccentBg") as Media.Brush ?? Media.Brushes.Teal;
+            SearchTextBlock.Inlines.Clear();
+            SearchHighlightInlines.Append(
+                SearchTextBlock.Inlines,
+                _searchText,
+                _searchText.Trim(),
+                primary,
+                accent,
+                13,
+                FontWeights.Normal);
+        }
+        else
+            SearchTextBlock.Inlines.Clear();
+
         SearchCountText.Text = has ? $"{_displayRows.Count} 条结果" : "";
     }
 
@@ -925,10 +960,8 @@ public partial class FileDialogJumpPickerWindow : Window
     private void ItemsList_OnPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
-        var el = e.OriginalSource as DependencyObject;
-        while (el != null && el is not ListBoxItem)
-            el = VisualTreeHelper.GetParent(el);
-        if (el is ListBoxItem lbi && lbi.DataContext is FileJumpPickerRow row)
+        if (FindAncestorListBoxItem(e.OriginalSource as DependencyObject) is { } lbi
+            && lbi.DataContext is FileJumpPickerRow row)
         {
             ItemsList.SelectedItem = row;
             CommitSelection(row.Path);
@@ -937,11 +970,37 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void ItemsList_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        var el = e.OriginalSource as DependencyObject;
-        while (el != null && el is not ListBoxItem)
-            el = VisualTreeHelper.GetParent(el);
-        if (el is ListBoxItem lbi && lbi.DataContext is FileJumpPickerRow row)
+        if (FindAncestorListBoxItem(e.OriginalSource as DependencyObject) is { } lbi
+            && lbi.DataContext is FileJumpPickerRow row)
             ItemsList.SelectedItem = row;
+    }
+
+    /// <summary>
+    /// 沿可视/逻辑树向上找最近的 <see cref="ListBoxItem"/>。
+    /// 注意：原 <c>OriginalSource</c> 可能是 <see cref="System.Windows.Documents.Run"/> 等
+    /// <see cref="ContentElement"/>（来自高亮 TextBlock 的 Inlines），它不是 Visual，
+    /// 直接调用 <see cref="VisualTreeHelper.GetParent"/> 会抛
+    /// "System.Windows.Documents.Run 不是 Visual 或 Visual3D"。
+    /// 因此需要先用 <see cref="LogicalTreeHelper"/> 走到 Visual 节点再切回视觉树。
+    /// </summary>
+    private static ListBoxItem? FindAncestorListBoxItem(DependencyObject? start)
+    {
+        var el = start;
+        while (el != null && el is not ListBoxItem)
+        {
+            DependencyObject? parent = null;
+            if (el is Visual or System.Windows.Media.Media3D.Visual3D)
+            {
+                try { parent = VisualTreeHelper.GetParent(el); }
+                catch { parent = null; }
+            }
+
+            parent ??= LogicalTreeHelper.GetParent(el);
+            if (parent == null) return null;
+            el = parent;
+        }
+
+        return el as ListBoxItem;
     }
 
     private void JumpRowContextMenu_Opened(object sender, RoutedEventArgs e)
@@ -1140,10 +1199,8 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void CommitSelection(string path)
     {
-        if (_autoForegroundStickyMode)
-            CommitNavigateKeepOpen(path);
-        else
-            CommitAndClose(path);
+        // 选中即跳转，但跳转列表不自动关闭：由 Esc / 点击列表外 / 文件对话框关闭 等显式动作收起。
+        CommitNavigateKeepOpen(path);
     }
 
     /// <summary>
@@ -1212,7 +1269,8 @@ public partial class FileDialogJumpPickerWindow : Window
                 List<FileJumpCandidate> fresh;
                 try
                 {
-                    fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect);
+                    fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect,
+                        recentFolders: _settings.RecentFileDialogFolders);
                 }
                 catch
                 {
@@ -1224,10 +1282,7 @@ public partial class FileDialogJumpPickerWindow : Window
                         try
                         {
                             if (!string.IsNullOrEmpty(folderOnly))
-                            {
-                                _settings.LastFileDialogFolder = folderOnly;
-                                _settings.Save();
-                            }
+                                _settings.PushRecentFileDialogFolder(folderOnly);
                         }
                         catch { /* ignore */ }
                     }, DispatcherPriority.Normal);
@@ -1241,10 +1296,7 @@ public partial class FileDialogJumpPickerWindow : Window
                     try
                     {
                         if (!string.IsNullOrEmpty(folderForSettings))
-                        {
-                            _settings.LastFileDialogFolder = folderForSettings;
-                            _settings.Save();
-                        }
+                            _settings.PushRecentFileDialogFolder(folderForSettings);
                     }
                     catch { /* ignore */ }
 

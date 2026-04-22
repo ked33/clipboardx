@@ -28,9 +28,8 @@ public partial class SettingsWindow : Window
     private bool _pendingCheckUpdatesOnStartup;
     private bool _pendingEnableShellNavigateInject;
     private string _pendingFileJumpFollowMode = FileJumpPickerFollowModes.Dialog;
-    private bool _pendingFileJumpAutoPopup = true;
-    private bool _pendingFileJumpOpenWhenDialogForeground = true;
-    private bool _pendingFileJumpAutoOnFirstClick;
+    private bool _pendingFileJumpOpenListOnDialogOpen = true;
+    private bool _pendingFileJumpAutoNavigateBest;
     private bool _pendingFileJumpAutoSyncOnReturn;
     private bool _pendingFileJumpPickerEverythingFolderSearch = true;
 #if CLIPX_FILEJUMP
@@ -110,14 +109,12 @@ public partial class SettingsWindow : Window
         _pendingFileJumpFollowMode = FileJumpPickerFollowModes.Normalize(settings.FileJumpPickerFollowMode);
         FileJumpFollowText.Text = FileJumpPickerFollowModes.IsDialog(_pendingFileJumpFollowMode) ? "跟随对话框" : "跟随鼠标";
 
-        _pendingFileJumpAutoPopup = settings.FileJumpPickerAutoPopup;
-        FileJumpAutoPopupText.Text = _pendingFileJumpAutoPopup ? "开启" : "关闭";
+        _pendingFileJumpOpenListOnDialogOpen = settings.FileJumpPickerOpenWhenDialogForeground;
+        FileJumpOpenListOnDialogOpenText.Text = _pendingFileJumpOpenListOnDialogOpen ? "开启" : "关闭";
 
-        _pendingFileJumpOpenWhenDialogForeground = settings.FileJumpPickerOpenWhenDialogForeground;
-        FileJumpOpenOnForegroundText.Text = _pendingFileJumpOpenWhenDialogForeground ? "开启" : "关闭";
-
-        _pendingFileJumpAutoOnFirstClick = settings.FileJumpAutoOnFirstClick;
-        FileJumpAutoClickText.Text = _pendingFileJumpAutoOnFirstClick ? "开启" : "关闭";
+        _pendingFileJumpAutoNavigateBest = settings.FileJumpAutoOnFirstClick;
+        FileJumpAutoNavigateBestText.Text = _pendingFileJumpAutoNavigateBest ? "开启" : "关闭";
+        UpdateFileJumpFollowVisibility();
 
         _pendingFileJumpAutoSyncOnReturn = settings.FileJumpAutoSyncOnReturn;
         FileJumpAutoSyncText.Text = _pendingFileJumpAutoSyncOnReturn ? "开启" : "关闭";
@@ -592,22 +589,24 @@ public partial class SettingsWindow : Window
         FileJumpFollowText.Text = FileJumpPickerFollowModes.IsDialog(_pendingFileJumpFollowMode) ? "跟随对话框" : "跟随鼠标";
     }
 
-    private void FileJumpAutoPopupCycle_Click(object sender, RoutedEventArgs e)
+    private void FileJumpOpenListOnDialogOpenCycle_Click(object sender, RoutedEventArgs e)
     {
-        _pendingFileJumpAutoPopup = !_pendingFileJumpAutoPopup;
-        FileJumpAutoPopupText.Text = _pendingFileJumpAutoPopup ? "开启" : "关闭";
+        _pendingFileJumpOpenListOnDialogOpen = !_pendingFileJumpOpenListOnDialogOpen;
+        FileJumpOpenListOnDialogOpenText.Text = _pendingFileJumpOpenListOnDialogOpen ? "开启" : "关闭";
+        UpdateFileJumpFollowVisibility();
     }
 
-    private void FileJumpOpenOnForegroundCycle_Click(object sender, RoutedEventArgs e)
+    private void FileJumpAutoNavigateBestCycle_Click(object sender, RoutedEventArgs e)
     {
-        _pendingFileJumpOpenWhenDialogForeground = !_pendingFileJumpOpenWhenDialogForeground;
-        FileJumpOpenOnForegroundText.Text = _pendingFileJumpOpenWhenDialogForeground ? "开启" : "关闭";
+        _pendingFileJumpAutoNavigateBest = !_pendingFileJumpAutoNavigateBest;
+        FileJumpAutoNavigateBestText.Text = _pendingFileJumpAutoNavigateBest ? "开启" : "关闭";
     }
 
-    private void FileJumpAutoClickCycle_Click(object sender, RoutedEventArgs e)
+    private void UpdateFileJumpFollowVisibility()
     {
-        _pendingFileJumpAutoOnFirstClick = !_pendingFileJumpAutoOnFirstClick;
-        FileJumpAutoClickText.Text = _pendingFileJumpAutoOnFirstClick ? "开启" : "关闭";
+        var vis = _pendingFileJumpOpenListOnDialogOpen ? Visibility.Collapsed : Visibility.Visible;
+        FileJumpFollowLabel.Visibility = vis;
+        FileJumpFollowBox.Visibility = vis;
     }
 
     private void FileJumpAutoSyncCycle_Click(object sender, RoutedEventArgs e)
@@ -789,9 +788,9 @@ public partial class SettingsWindow : Window
         _settings.CheckUpdatesOnStartup = _pendingCheckUpdatesOnStartup;
         _settings.EnableShellNavigateInject = _pendingEnableShellNavigateInject;
         _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(_pendingFileJumpFollowMode);
-        _settings.FileJumpPickerAutoPopup = _pendingFileJumpAutoPopup;
-        _settings.FileJumpPickerOpenWhenDialogForeground = _pendingFileJumpOpenWhenDialogForeground;
-        _settings.FileJumpAutoOnFirstClick = _pendingFileJumpAutoOnFirstClick;
+        _settings.FileJumpPickerOpenWhenDialogForeground = _pendingFileJumpOpenListOnDialogOpen;
+        _settings.FileJumpPickerAutoPopup = _pendingFileJumpOpenListOnDialogOpen;
+        _settings.FileJumpAutoOnFirstClick = _pendingFileJumpAutoNavigateBest;
         _settings.FileJumpAutoSyncOnReturn = _pendingFileJumpAutoSyncOnReturn;
         _settings.FileJumpPickerEverythingFolderSearch = _pendingFileJumpPickerEverythingFolderSearch;
 #if CLIPX_FILEJUMP
@@ -824,4 +823,5 @@ public partial class SettingsWindow : Window
         DialogResult = false;
         Close();
     }
+
 }
