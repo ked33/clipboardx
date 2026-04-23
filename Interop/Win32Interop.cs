@@ -104,6 +104,14 @@ internal static class Win32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool CloseClipboard();
 
+    /// <summary>剪贴板自系统启动以来的写入序列号；用于段间检测「目标已覆盖剪贴板」或外部复制。</summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetClipboardSequenceNumber();
+
+    /// <summary>当前持有 OpenClipboard 的窗口；非 0 且非自身意味着目标程序正在读取我们刚 Set 的内容。</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetOpenClipboardWindow();
+
     /// <summary>
     /// 在写入 WPF Clipboard 之前：若抢占成功则 EmptyClipboard，常能更快结束上一进程的延迟渲染/OLE 占用。
     /// 失败（另一线程仍 Open 着）时返回 false，由上层照常重试 Set*。

@@ -150,6 +150,10 @@ public partial class PopupWindow : Window
     private bool _clickReceivedByPopup;
     private int _pendingPhysX, _pendingPhysY;
     private bool _isOurSetWindowPos;
+    /// <summary>上次成功通过 caret/UIA 解析到的目标窗口对应的 caret 物理像素位置（含 caretGap）；用于自绘 caret 应用（Word/Office/Chromium）冷启动失败时的兜底。</summary>
+    private IntPtr _lastCaretCacheHwnd = IntPtr.Zero;
+    private int _lastCaretCachePhysX, _lastCaretCachePhysY;
+    private long _lastCaretCacheTickMs;
     /// <summary>Show/UpdateLayout 过程中阻止 WPF 改写位置，避免先出现在 (0,0) 或顶边再跳到目标点。</summary>
     private bool _lockPopupWindowNomove;
     private List<QuickPasteEntry> _quickPastes = new();
@@ -297,6 +301,8 @@ public partial class PopupWindow : Window
 
         var source = HwndSource.FromHwnd(_hwnd);
         source?.AddHook(WndProc);
+
+        WarmUpUiaCaretProxy();
 
 #if CLIPX_CLIPBOARD
         if (!Win32.RegisterHotKey(_hwnd, HotkeyId, _hotkeyModifiers | Win32.MOD_NOREPEAT, _hotkeyKey))
@@ -776,7 +782,7 @@ public partial class PopupWindow : Window
                     _allItems.Insert(0, fe);
                     TrimItems();
                     _historyStore.TryInsert(fe);
-                    AutoBatchEnqueueIfNeeded(fe);
+                    AutoBatchEnqueueIfNeeded(fe, fromClipboardMonitor: true);
                     RefreshFilter();
                     return;
                 }
@@ -792,7 +798,7 @@ public partial class PopupWindow : Window
                     _allItems.Insert(0, te);
                     TrimItems();
                     _historyStore.TryInsert(te);
-                    AutoBatchEnqueueIfNeeded(te);
+                    AutoBatchEnqueueIfNeeded(te, fromClipboardMonitor: true);
                     RefreshFilter();
                     return;
                 }
@@ -837,7 +843,7 @@ public partial class PopupWindow : Window
                             _allItems.Insert(0, ie);
                             TrimItems();
                             _historyStore.TryInsert(ie);
-                            AutoBatchEnqueueIfNeeded(ie);
+                            AutoBatchEnqueueIfNeeded(ie, fromClipboardMonitor: true);
                             RefreshFilter();
                             ClipboardDiagnosticsLog.Write($"monitor history inserted image outBytes={pngData.Length}");
                         }
@@ -1457,7 +1463,10 @@ public partial class PopupWindow : Window
     private Task TryPushClipboardQueueHeadAsync() => Task.CompletedTask;
 #endif
 
-    private void AutoBatchEnqueueIfNeeded(ClipboardEntry entry)
+    /// <param name="fromClipboardMonitor">为 true 表示 entry 是由 <see cref="OnClipboardUpdate"/> 刚从系统剪贴板读出来的，
+    /// 此刻 OS 剪贴板内容 = entry，不需要再回写一次（LIFO 下入队首会触发冗余 SetClipboard，
+    /// 与源应用 OLE 通告链争抢导致 8 次×55ms ≈ 440ms 重试卡顿；图片更可能再 fallback 落盘）。</param>
+    private void AutoBatchEnqueueIfNeeded(ClipboardEntry entry, bool fromClipboardMonitor = false)
     {
 #if CLIPX_CLIPBOARD
         if (entry.IsQuickPaste) return;
@@ -1473,7 +1482,8 @@ public partial class PopupWindow : Window
         UpdateBatchOrderProperties();
         ReorderAllItemsQueueFirst();
         SyncBatchPasteKeyboardHook();
-        SchedulePushBatchQueueHeadIfChanged(headBefore, mode);
+        if (!fromClipboardMonitor)
+            SchedulePushBatchQueueHeadIfChanged(headBefore, mode);
         if (_batchQueue.Count > 0)
             _batchQueueAwaitingNextPasteToSwitchOff = false;
 #endif
@@ -1648,39 +1658,41 @@ public partial class PopupWindow : Window
     private static bool IsAllTextEntries(IReadOnlyList<ClipboardEntry> items) =>
         items.Count > 0 && items.All(e => e.Type == EntryType.Text);
 
-    /// <summary>保持顺序将列表切成连续纯文段与其它条目（每段 1 条非文本，或连续文本）。</summary>
-    private static List<List<ClipboardEntry>> BuildAdjacentTextRuns(IReadOnlyList<ClipboardEntry> ordered)
+    /// <summary>保持顺序将列表按「Text vs 非 Text」二分聚合：相邻 Text 归一段；相邻 Image/Files 归一段（统一以 FileDropList 一次粘贴）。</summary>
+    private static List<List<ClipboardEntry>> BuildAdjacentRuns(IReadOnlyList<ClipboardEntry> ordered)
     {
+        static bool SameKind(EntryType a, EntryType b) =>
+            (a == EntryType.Text) == (b == EntryType.Text);
         var segments = new List<List<ClipboardEntry>>();
         var i = 0;
         while (i < ordered.Count)
         {
-            if (ordered[i].Type == EntryType.Text)
+            var anchor = ordered[i].Type;
+            var run = new List<ClipboardEntry> { ordered[i] };
+            i++;
+            while (i < ordered.Count && SameKind(anchor, ordered[i].Type))
             {
-                var run = new List<ClipboardEntry>();
-                while (i < ordered.Count && ordered[i].Type == EntryType.Text)
-                {
-                    run.Add(ordered[i]);
-                    i++;
-                }
-                segments.Add(run);
-            }
-            else
-            {
-                segments.Add([ordered[i]]);
+                run.Add(ordered[i]);
                 i++;
             }
+            segments.Add(run);
         }
         return segments;
     }
+
+    private static bool IsAllImageOrFilesEntries(IReadOnlyList<ClipboardEntry> items) =>
+        items.Count > 0 && items.All(e => e.Type == EntryType.Image || e.Type == EntryType.Files);
 
     /// <summary>开启合并粘贴且条目类型混合时：仅将相邻的纯文本合并成一段粘贴，图/文件等仍分段粘贴。</summary>
     private async Task RunOrderedPastesWithAdjacentTextMergeAsync(
         IReadOnlyList<ClipboardEntry> items,
         bool newlineAfterEachTextWhenCtrlEnter)
     {
-        var segments = BuildAdjacentTextRuns(items);
+        var segments = BuildAdjacentRuns(items);
         _sequentialPasteHold = true;
+        // 批量入口立刻 Hide：每段自己 hidePopupAfter=isLast 会让前 N-1 段时面板仍前台，
+        // SetForegroundWindowAggressive 抢回目标不可靠；先 Hide 让 Win32.SetForegroundWindow 直接成功。
+        if (_isPopupVisible) HidePopup();
         try
         {
             var opIndex = 0;
@@ -1688,26 +1700,67 @@ public partial class PopupWindow : Window
             {
                 var seg = segments[s];
                 var isLast = s == segments.Count - 1;
-                if (seg.Count >= 2 && IsAllTextEntries(seg))
+                bool segIsImageOrFiles = false;
+                if (IsAllTextEntries(seg))
                 {
-                    await RunAllTextBatchSingleClipboardAsync(
-                        seg,
-                        newlineAfterEachTextWhenCtrlEnter,
-                        hidePopupAfter: isLast,
-                        applyHistoryReorder: false,
-                        ownsGlobalPasteState: false);
+                    if (seg.Count >= 2)
+                    {
+                        await RunAllTextBatchSingleClipboardAsync(
+                            seg,
+                            newlineAfterEachTextWhenCtrlEnter,
+                            hidePopupAfter: false,
+                            applyHistoryReorder: false,
+                            ownsGlobalPasteState: false);
+                    }
+                    else
+                    {
+                        await PasteEntryAsync(
+                            seg[0],
+                            hidePopupAfter: false,
+                            sequentialSegmentIndex: opIndex,
+                            sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
+                    }
+                }
+                else if (IsAllImageOrFilesEntries(seg))
+                {
+                    segIsImageOrFiles = true;
+                    // 1 张图/1 条文件：保留旧路径（PasteEntryAsync 对单条已是最稳）；
+                    // ≥2 条（图+图、文件+文件、图+文件混合）：合并为一次 FileDropList 粘贴。
+                    if (seg.Count == 1)
+                    {
+                        await PasteEntryAsync(
+                            seg[0],
+                            hidePopupAfter: false,
+                            sequentialSegmentIndex: opIndex,
+                            sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
+                    }
+                    else
+                    {
+                        await RunBatchImagesAndFilesAsFileDropAsync(
+                            seg,
+                            hidePopupAfter: false,
+                            applyHistoryReorder: false,
+                            ownsGlobalPasteState: false);
+                    }
                 }
                 else
                 {
+                    var single = seg[0];
+                    segIsImageOrFiles = single.Type == EntryType.Image || single.Type == EntryType.Files;
                     await PasteEntryAsync(
-                        seg[0],
-                        hidePopupAfter: isLast,
+                        single,
+                        hidePopupAfter: false,
                         sequentialSegmentIndex: opIndex,
                         sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
                 }
                 opIndex++;
                 if (!isLast)
-                    await Task.Delay(SequentialInterSegmentDelayMs);
+                {
+                    // 等目标真正读取剪贴板再继续下一段；否则 Word 等慢消费方会出现「漏粘上段、当前段被粘两次」。
+                    await WaitForTargetClipboardConsumeAsync(afterImageSegment: segIsImageOrFiles);
+                    if (SequentialInterSegmentDelayMs > 0)
+                        await Task.Delay(SequentialInterSegmentDelayMs);
+                }
             }
 
             if (items.Count > 0)
@@ -1801,27 +1854,183 @@ public partial class PopupWindow : Window
         }
     }
 
-    /// <summary>连续段之间极短让步，避免 CLIPBRD_E_CANT_OPEN（仅图/文件等必须分段时使用）。</summary>
+    /// <summary>多张图片 / 文件 / 图+文混合：图片落盘为 PNG，与文件路径合成同一个 FileDropList，一次 SetClipboard + 一次粘贴。
+    /// 这是替代「逐张 SetImage 串行粘贴」的核心稳态路径——目标程序（Word/微信/邮件等）会把 FileDropList 中每个图片当作单独图片插入，
+    /// 既消除了段间剪贴板覆盖的时序竞态，又避免了 OLE Image 通告链在多次 SetImage 时累积失败。</summary>
+    private async Task RunBatchImagesAndFilesAsFileDropAsync(
+        IReadOnlyList<ClipboardEntry> ordered,
+        bool hidePopupAfter,
+        bool applyHistoryReorder,
+        bool ownsGlobalPasteState)
+    {
+        var paths = new StringCollection();
+        var tempPathsToCleanupOnFailure = new List<string>();
+        var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+        try { Directory.CreateDirectory(dir); } catch { }
+
+        foreach (var e in ordered)
+        {
+            if (e.Type == EntryType.Files && e.FilePaths is { Length: > 0 })
+            {
+                foreach (var p in e.FilePaths)
+                    if (!string.IsNullOrWhiteSpace(p)) paths.Add(p);
+            }
+            else if (e.Type == EntryType.Image && e.ImageData is { Length: > 0 })
+            {
+                try
+                {
+                    var p = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid():N}.png");
+                    File.WriteAllBytes(p, e.ImageData);
+                    paths.Add(p);
+                    tempPathsToCleanupOnFailure.Add(p);
+                }
+                catch (Exception ex)
+                {
+                    ClipboardDiagnosticsLog.Write($"BATCH_FILEDROP image temp write failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        if (paths.Count == 0)
+        {
+            ClipboardDiagnosticsLog.Write("BATCH_FILEDROP no usable paths; skip");
+            return;
+        }
+
+        if (ownsGlobalPasteState)
+            _sequentialPasteHold = true;
+        _pasteInProgress = true;
+        try
+        {
+            ClearPendingDelete();
+            if (_targetWindow != IntPtr.Zero && !Win32.IsWindow(_targetWindow))
+                _targetWindow = IntPtr.Zero;
+
+            ClipboardDiagnosticsLog.Write(
+                $"paste BATCH_FILEDROP_ONE_SHOT count={paths.Count} entries={ordered.Count} outerHold={ownsGlobalPasteState}");
+
+            if (hidePopupAfter)
+                HidePopup();
+            if (_targetWindow != IntPtr.Zero)
+                Win32.SetForegroundWindowAggressive(_targetWindow);
+
+            await Task.Delay(40);
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+            if (_hwnd != IntPtr.Zero)
+                Win32.TryEmptyClipboardAfterOpen(_hwnd);
+
+            _isSettingClipboard = true;
+            var ok = await TrySetClipboardAsync(
+                () => System.Windows.Clipboard.SetFileDropList(paths),
+                $"SetFileDropList batchAllAsFiles count={paths.Count}",
+                maxRetries: 10,
+                delayMs: 50,
+                clipNudgeHwnd: _hwnd);
+            await Task.Delay(12);
+            _isSettingClipboard = false;
+
+            if (ok)
+            {
+                await Task.Delay(30);
+                SendPasteToTarget();
+            }
+            else
+            {
+                ClipboardDiagnosticsLog.Write("BATCH_FILEDROP SetFileDropList GAVE_UP; cleaning temp PNGs");
+                foreach (var p in tempPathsToCleanupOnFailure)
+                {
+                    try { File.Delete(p); } catch { /* ignore */ }
+                }
+            }
+
+            if (applyHistoryReorder)
+                ApplyDeferredSequentialPasteHistoryOrder(ordered);
+            await Task.Delay(80);
+        }
+        finally
+        {
+            if (ownsGlobalPasteState)
+            {
+                _sequentialPasteHold = false;
+                _pasteInProgress = false;
+            }
+        }
+    }
+
+    /// <summary>连续段之间最小让步：仅作为下限，真正的等待由 <see cref="WaitForTargetClipboardConsumeAsync"/> 决定。
+    /// 早期硬编码 22ms 在 Word 接收图片 OLE（常需 100~300ms）场景下会出现「漏粘上一段、当前段被粘两次」的伪重复。</summary>
     private const int SequentialInterSegmentDelayMs = 22;
+
+    /// <summary>段间等待目标程序消费（OpenClipboard/读取）剪贴板的最长时长；超时则按下一段直接覆盖处理。</summary>
+    private const int SequentialInterSegmentMaxWaitMs = 350;
+
+    /// <summary>图片段写入剪贴板后，目标程序对 OLE 通告链处理常显著慢于文本，给出更宽松的等待上限。</summary>
+    private const int SequentialInterSegmentMaxWaitMsForImage = 600;
 
     /// <summary>整轮结束后稍晚再解除「粘贴中」。</summary>
     private const int SequentialTailSettleMs = 85;
+
+    /// <summary>
+    /// 段间等待：以剪贴板序列号 + 「目标 OpenClipboard 持有过的瞬间」为信号，确认目标程序已消化上一段；
+    /// 超时则放弃等待按下一段继续。返回实际等待毫秒数。
+    /// </summary>
+    /// <param name="afterImageSegment">为 true 时使用图片专用的更长上限。</param>
+    private async Task<int> WaitForTargetClipboardConsumeAsync(bool afterImageSegment)
+    {
+        var maxMs = afterImageSegment ? SequentialInterSegmentMaxWaitMsForImage : SequentialInterSegmentMaxWaitMs;
+        var startSeq = Win32.GetClipboardSequenceNumber();
+        var sw = Stopwatch.StartNew();
+        var lastOwner = IntPtr.Zero;
+        bool sawForeignOpen = false;
+        // 轮询步长 12ms：和我们 Set 后到目标 Open 的典型时延量级匹配，且 30 次内即可铺满 350ms 上限。
+        while (sw.ElapsedMilliseconds < maxMs)
+        {
+            await Task.Delay(12);
+            // 序列号变化意味着剪贴板已被「另一次写入」覆盖（不期望发生，跳出立即返回让外层日志记录）。
+            if (Win32.GetClipboardSequenceNumber() != startSeq)
+            {
+                ClipboardDiagnosticsLog.Write($"interSeg wait: seq changed earlier than expected ({sw.ElapsedMilliseconds}ms)");
+                break;
+            }
+            var owner = Win32.GetOpenClipboardWindow();
+            if (owner != IntPtr.Zero && owner != _hwnd && owner != lastOwner)
+            {
+                lastOwner = owner;
+                sawForeignOpen = true;
+                // 目标已开始读取——再让出极短时间给 IDataObject GetData 完成
+                await Task.Delay(20);
+                break;
+            }
+        }
+        sw.Stop();
+        ClipboardDiagnosticsLog.Write(
+            $"interSeg waitMs={sw.ElapsedMilliseconds} max={maxMs} sawForeignOpen={sawForeignOpen} afterImage={afterImageSegment}");
+        return (int)sw.ElapsedMilliseconds;
+    }
 
     /// <summary>多段粘贴共享外部「粘贴进行中」标志，避免每段之间剪贴板监听插队。</summary>
     private async Task RunSequentialPastesAsync(IReadOnlyList<ClipboardEntry> items, bool newlineAfterEachTextWhenCtrlEnter = false)
     {
         _sequentialPasteHold = true;
+        if (_isPopupVisible) HidePopup();
         try
         {
             for (int i = 0; i < items.Count; i++)
             {
+                var cur = items[i];
                 await PasteEntryAsync(
-                    items[i],
-                    hidePopupAfter: i == items.Count - 1,
+                    cur,
+                    hidePopupAfter: false,
                     sequentialSegmentIndex: i,
                     sendNewlineAfterTextWhenCtrlEnterBatch: newlineAfterEachTextWhenCtrlEnter);
                 if (i < items.Count - 1)
-                    await Task.Delay(SequentialInterSegmentDelayMs);
+                {
+                    await WaitForTargetClipboardConsumeAsync(
+                        afterImageSegment: cur.Type == EntryType.Image || cur.Type == EntryType.Files);
+                    if (SequentialInterSegmentDelayMs > 0)
+                        await Task.Delay(SequentialInterSegmentDelayMs);
+                }
             }
 
             if (items.Count > 0)
@@ -1910,6 +2119,10 @@ public partial class PopupWindow : Window
         _lockPopupWindowNomove = true;
         try
         {
+            #region agent log
+            AgentDbgLog("H23", "ShowPopup", "phase=pre-show",
+                new { _targetWindow = _targetWindow.ToInt64(), ActualHeight, MaxHeight });
+            #endregion
             PositionPopup();
             TryApplyPendingPositionAsWpfLeftTop();
             ApplyPendingPositionSetWindowPos();
@@ -1918,6 +2131,10 @@ public partial class PopupWindow : Window
             Show();
             UpdateLayout();
 
+            #region agent log
+            AgentDbgLog("H23", "ShowPopup", "phase=post-show",
+                new { ActualHeight });
+            #endregion
             PositionPopup();
 
             _isPopupVisible = true;
@@ -1932,6 +2149,7 @@ public partial class PopupWindow : Window
             _lockPopupWindowNomove = false;
         }
 
+        // Show()+UpdateLayout 后再做一次定位 + SetWindowPos，确保最终帧停在第二次（caret/UIA 命中）的坐标后才点亮 Opacity，避免「先错位再闪到正确位置」
         Opacity = _popupOpacity;
 
         if (_displayItems.Count > 0)
@@ -2158,6 +2376,10 @@ public partial class PopupWindow : Window
         if (IsShellForegroundWindow(_targetWindow))
         {
             PositionPopupFixedShellWorkArea();
+            #region agent log
+            AgentDbgLog("H23", "PositionPopup", "branch=ShellWorkArea",
+                new { _targetWindow = _targetWindow.ToInt64(), _pendingPhysX, _pendingPhysY });
+            #endregion
             return;
         }
 
@@ -2165,6 +2387,10 @@ public partial class PopupWindow : Window
         {
             Win32.GetCursorPos(out var pt);
             SetPositionWithOffset(pt.X + 8, pt.Y + 20);
+            #region agent log
+            AgentDbgLog("H23", "PositionPopup", "branch=MousePref",
+                new { pt.X, pt.Y, _pendingPhysX, _pendingPhysY });
+            #endregion
             return;
         }
 
@@ -2173,6 +2399,24 @@ public partial class PopupWindow : Window
         {
             Win32.GetCursorPos(out var deskPt);
             SetPositionWithOffset(deskPt.X + 8, deskPt.Y + 20);
+            #region agent log
+            AgentDbgLog("H23", "PositionPopup", "branch=ExplorerDesktop",
+                new { deskPt.X, deskPt.Y, _pendingPhysX, _pendingPhysY });
+            #endregion
+            return;
+        }
+
+        // UIA 优先（FocusedElement+TextPattern.Selection 在 Office/Chromium 上必然是文档真实 caret）；
+        // 历史上把 GetGUIThreadInfo 放第一位会把 Word ribbon 上的 user32 Edit 控件 caret 当成「输入位置」，
+        // 导致同一文档第二次呼出时焦点恢复到 ribbon 上的次级 Edit、弹窗错位到 ribbon 区域。
+        if (TryGetCaretByAutomation(out double uiaX, out double uiaY))
+        {
+            SetPositionWithOffset(uiaX, uiaY + caretGap);
+            CacheCaretSuccess(_targetWindow, _pendingPhysX, _pendingPhysY);
+            #region agent log
+            AgentDbgLog("H23", "PositionPopup", "branch=UIA",
+                new { uiaX, uiaY, _pendingPhysX, _pendingPhysY });
+            #endregion
             return;
         }
 
@@ -2186,6 +2430,11 @@ public partial class PopupWindow : Window
             if (pt.X > 0 || pt.Y > 0)
             {
                 SetPositionWithOffset(pt.X, pt.Y + caretGap);
+                CacheCaretSuccess(_targetWindow, _pendingPhysX, _pendingPhysY);
+                #region agent log
+                AgentDbgLog("H23", "PositionPopup", "branch=GUIThreadInfoCaret",
+                    new { pt.X, pt.Y, _pendingPhysX, _pendingPhysY });
+                #endregion
                 return;
             }
         }
@@ -2203,6 +2452,11 @@ public partial class PopupWindow : Window
                     {
                         Win32.ClientToScreen(focusWnd, ref caretPos);
                         SetPositionWithOffset(caretPos.X, caretPos.Y + caretGap);
+                        CacheCaretSuccess(_targetWindow, _pendingPhysX, _pendingPhysY);
+                        #region agent log
+                        AgentDbgLog("H23", "PositionPopup", "branch=AttachedGetCaretPos",
+                            new { caretPos.X, caretPos.Y, _pendingPhysX, _pendingPhysY });
+                        #endregion
                         return;
                     }
                 }
@@ -2211,14 +2465,42 @@ public partial class PopupWindow : Window
         }
         catch { }
 
-        if (TryGetCaretByAutomation(out double uiaX, out double uiaY))
+        // UIA 冷启动/Word 自绘 caret 兜底：30s 内同窗口曾成功定位过则复用，避免每次呼出都贴到鼠标处
+        if (TryUseCachedCaret(_targetWindow, out int cachedX, out int cachedY))
         {
-            SetPositionWithOffset(uiaX, uiaY + caretGap);
+            _pendingPhysX = cachedX;
+            _pendingPhysY = cachedY;
+            #region agent log
+            AgentDbgLog("H23", "PositionPopup", "branch=CachedCaret",
+                new { cachedX, cachedY, ageMs = Environment.TickCount64 - _lastCaretCacheTickMs });
+            #endregion
             return;
         }
 
         Win32.GetCursorPos(out var cursor);
         SetPositionWithOffset(cursor.X + 8, cursor.Y + 20);
+        #region agent log
+        AgentDbgLog("H23", "PositionPopup", "branch=CursorFallback",
+            new { cursor.X, cursor.Y, _pendingPhysX, _pendingPhysY });
+        #endregion
+    }
+
+    private void CacheCaretSuccess(IntPtr hwnd, int physX, int physY)
+    {
+        _lastCaretCacheHwnd = hwnd;
+        _lastCaretCachePhysX = physX;
+        _lastCaretCachePhysY = physY;
+        _lastCaretCacheTickMs = Environment.TickCount64;
+    }
+
+    private bool TryUseCachedCaret(IntPtr hwnd, out int physX, out int physY)
+    {
+        physX = physY = 0;
+        if (_lastCaretCacheHwnd == IntPtr.Zero || hwnd != _lastCaretCacheHwnd) return false;
+        if (Environment.TickCount64 - _lastCaretCacheTickMs > 30_000) return false;
+        physX = _lastCaretCachePhysX;
+        physY = _lastCaretCachePhysY;
+        return true;
     }
 
     /// <summary>当前前台是否为 Windows 桌面（Progman/WorkerW），即点击壁纸或桌面图标时的焦点窗体。</summary>
@@ -2233,14 +2515,17 @@ public partial class PopupWindow : Window
     private static bool TryGetCaretByAutomation(out double x, out double y)
     {
         x = y = 0;
+        var sw = Stopwatch.StartNew();
+        string outcome = "init";
+        string source = "none";
         try
         {
-            var task = Task.Run<(bool ok, double x, double y)>(() =>
+            var task = Task.Run<(bool ok, double x, double y, string src)>(() =>
             {
                 try
                 {
                     var focused = System.Windows.Automation.AutomationElement.FocusedElement;
-                    if (focused == null) return (false, 0, 0);
+                    if (focused == null) return (false, 0, 0, "no-focused");
 
                     if (focused.TryGetCurrentPattern(
                             System.Windows.Automation.TextPattern.Pattern, out var p))
@@ -2250,27 +2535,61 @@ public partial class PopupWindow : Window
                         {
                             var rects = sel[0].GetBoundingRectangles();
                             if (rects.Length > 0 && (rects[0].X > 0 || rects[0].Y > 0))
-                                return (true, rects[0].X, rects[0].Bottom + 4);
+                                return (true, rects[0].X, rects[0].Bottom + 4, "text-sel");
                         }
                     }
 
                     var rect = focused.Current.BoundingRectangle;
                     if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
-                        return (true, rect.X + 20, rect.Bottom + 4);
+                        return (true, rect.X + 20, rect.Bottom + 4, "bound-rect");
 
-                    return (false, 0, 0);
+                    return (false, 0, 0, "no-pattern-no-rect");
                 }
-                catch { return (false, 0, 0); }
+                catch (Exception ex) { return (false, 0, 0, "ex:" + ex.GetType().Name); }
             });
 
-            if (task.Wait(200))
+            // Word/Office/Chromium 走 UIA 文本模式，冷启动 200ms 常超时；放宽到 500ms 才能首次命中
+            if (task.Wait(500))
             {
                 var result = task.Result;
-                if (result.ok) { x = result.x; y = result.y; return true; }
+                source = result.src;
+                if (result.ok) { x = result.x; y = result.y; outcome = "ok"; return true; }
+                outcome = "miss";
+            }
+            else
+            {
+                outcome = "timeout-500ms";
             }
         }
-        catch { }
+        catch (Exception ex) { outcome = "ex:" + ex.GetType().Name; }
+        finally
+        {
+            sw.Stop();
+            #region agent log
+            AgentDbgLog("H23", "TryGetCaretByAutomation", outcome,
+                new { ms = sw.ElapsedMilliseconds, source, x, y });
+            #endregion
+        }
         return false;
+    }
+
+    /// <summary>启动后异步预热 UIA TextPattern 代理，避免首次从 Word/Office 调出剪贴板时 UIA 200~500ms 冷启动导致定位落到鼠标兜底。</summary>
+    private static void WarmUpUiaCaretProxy()
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                var focused = System.Windows.Automation.AutomationElement.FocusedElement;
+                if (focused != null)
+                {
+                    _ = focused.TryGetCurrentPattern(
+                        System.Windows.Automation.TextPattern.Pattern, out _);
+                    _ = focused.Current.BoundingRectangle;
+                }
+            }
+            catch { }
+        });
     }
 
     private void SetPositionWithOffset(double physX, double physY)
@@ -5427,60 +5746,30 @@ public partial class PopupWindow : Window
         var lWinHeld = (Win32.GetAsyncKeyState(Win32.VK_LWIN) & 0x8000) != 0;
         var rWinHeld = (Win32.GetAsyncKeyState(Win32.VK_RWIN) & 0x8000) != 0;
 
-        var inputs = new Win32.INPUT[(ctrlHeld ? 1 : 0) + (altHeld ? 1 : 0) + (lWinHeld ? 1 : 0) + (rWinHeld ? 1 : 0) + 4];
-        var i = 0;
-
-        if (ctrlHeld)
+        var releaseCount = (ctrlHeld ? 1 : 0) + (altHeld ? 1 : 0) + (lWinHeld ? 1 : 0) + (rWinHeld ? 1 : 0);
+        if (releaseCount > 0)
         {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_CONTROL;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (altHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_MENU;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (lWinHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_LWIN;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (rWinHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_RWIN;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
+            var release = new Win32.INPUT[releaseCount];
+            var r = 0;
+            if (ctrlHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_CONTROL; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (altHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_MENU; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (lWinHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_LWIN; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (rWinHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_RWIN; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            Win32.SendInput((uint)release.Length, release, Marshal.SizeOf<Win32.INPUT>());
+            Thread.Sleep(1);
         }
 
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_SHIFT;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_INSERT;
-        inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_EXTENDEDKEY;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_INSERT;
-        inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_EXTENDEDKEY | Win32.KEYEVENTF_KEYUP;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_SHIFT;
-        inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-
-        Win32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Win32.INPUT>());
+        var combo = new Win32.INPUT[4];
+        combo[0].type = Win32.INPUT_KEYBOARD; combo[0].u.ki.wVk = Win32.VK_SHIFT;
+        combo[1].type = Win32.INPUT_KEYBOARD; combo[1].u.ki.wVk = Win32.VK_INSERT; combo[1].u.ki.dwFlags = Win32.KEYEVENTF_EXTENDEDKEY;
+        combo[2].type = Win32.INPUT_KEYBOARD; combo[2].u.ki.wVk = Win32.VK_INSERT; combo[2].u.ki.dwFlags = Win32.KEYEVENTF_EXTENDEDKEY | Win32.KEYEVENTF_KEYUP;
+        combo[3].type = Win32.INPUT_KEYBOARD; combo[3].u.ki.wVk = Win32.VK_SHIFT; combo[3].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        Win32.SendInput((uint)combo.Length, combo, Marshal.SizeOf<Win32.INPUT>());
     }
 
-    /// <summary>先释放可能干扰的修饰键，再发送 Ctrl+V（避免呼出面板时 Shift 等仍按下导致「无格式粘贴」等）。</summary>
+    /// <summary>先释放可能干扰的修饰键，再发送 Ctrl+V（避免呼出面板时 Shift 等仍按下导致「无格式粘贴」等）。
+    /// 两次 SendInput 拆分提交：第一次释放真实按下的修饰键，让目标处理一帧；第二次再发 Ctrl+V。
+    /// 历史上整批一次 SendInput 偶发出现目标先看到 V Down 再看到 Ctrl Down，进而把 V 当成普通字符输入（用户看到「v」字符）。</summary>
     private static void SendCtrlVPaste()
     {
         var lShiftHeld = (Win32.GetAsyncKeyState(Win32.VK_LSHIFT) & 0x8000) != 0;
@@ -5490,71 +5779,29 @@ public partial class PopupWindow : Window
         var lWinHeld = (Win32.GetAsyncKeyState(Win32.VK_LWIN) & 0x8000) != 0;
         var rWinHeld = (Win32.GetAsyncKeyState(Win32.VK_RWIN) & 0x8000) != 0;
 
-        var inputs = new Win32.INPUT[
-            (lShiftHeld ? 1 : 0) + (rShiftHeld ? 1 : 0) + (ctrlHeld ? 1 : 0) + (altHeld ? 1 : 0) + (lWinHeld ? 1 : 0) + (rWinHeld ? 1 : 0) + 4];
-        var i = 0;
-
-        if (lShiftHeld)
+        var releaseCount = (lShiftHeld ? 1 : 0) + (rShiftHeld ? 1 : 0) + (ctrlHeld ? 1 : 0)
+                           + (altHeld ? 1 : 0) + (lWinHeld ? 1 : 0) + (rWinHeld ? 1 : 0);
+        if (releaseCount > 0)
         {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_LSHIFT;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (rShiftHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_RSHIFT;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (ctrlHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_CONTROL;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (altHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_MENU;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (lWinHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_LWIN;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
-        }
-        if (rWinHeld)
-        {
-            inputs[i].type = Win32.INPUT_KEYBOARD;
-            inputs[i].u.ki.wVk = Win32.VK_RWIN;
-            inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-            i++;
+            var release = new Win32.INPUT[releaseCount];
+            var r = 0;
+            if (lShiftHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_LSHIFT; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (rShiftHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_RSHIFT; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (ctrlHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_CONTROL; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (altHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_MENU; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (lWinHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_LWIN; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            if (rWinHeld) { release[r].type = Win32.INPUT_KEYBOARD; release[r].u.ki.wVk = Win32.VK_RWIN; release[r].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP; r++; }
+            Win32.SendInput((uint)release.Length, release, Marshal.SizeOf<Win32.INPUT>());
+            // 让目标线程处理一帧释放事件，再注入组合键。极短让步（Sleep 0 即可触发线程切换）。
+            Thread.Sleep(1);
         }
 
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_CONTROL;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_V;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_V;
-        inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-        i++;
-
-        inputs[i].type = Win32.INPUT_KEYBOARD;
-        inputs[i].u.ki.wVk = Win32.VK_CONTROL;
-        inputs[i].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-
-        Win32.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Win32.INPUT>());
+        var combo = new Win32.INPUT[4];
+        combo[0].type = Win32.INPUT_KEYBOARD; combo[0].u.ki.wVk = Win32.VK_CONTROL;
+        combo[1].type = Win32.INPUT_KEYBOARD; combo[1].u.ki.wVk = Win32.VK_V;
+        combo[2].type = Win32.INPUT_KEYBOARD; combo[2].u.ki.wVk = Win32.VK_V; combo[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        combo[3].type = Win32.INPUT_KEYBOARD; combo[3].u.ki.wVk = Win32.VK_CONTROL; combo[3].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
+        Win32.SendInput((uint)combo.Length, combo, Marshal.SizeOf<Win32.INPUT>());
     }
 
     /// <summary>文本是否为严格 JSON（<see cref="JsonDocument"/> 可解析，不允许注释与尾逗号）。</summary>

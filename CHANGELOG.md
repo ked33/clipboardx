@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-04-23
+
+### 批量粘贴
+
+- **多图/多文件合并**：`BuildAdjacentRuns` 升级为「Text vs 非 Text」二分聚合；相邻图片落盘 PNG、相邻文件直接取路径、图+文件混合统一进入同一个 `FileDropList`，由新增 `RunBatchImagesAndFilesAsFileDropAsync` 一次 SetClipboard + 一次粘贴交付，根治 Word 多图场景下「漏粘 / 重复粘 / 出现字符 v」
+- **段间稳定性**：新增 `WaitForTargetClipboardConsumeAsync`，以剪贴板序列号 + 目标 `OpenClipboard` 为信号等待消费（图片段 600ms、文本段 350ms 上限），替代固定 22ms 让步；`RunOrderedPastesWithAdjacentTextMergeAsync` / `RunSequentialPastesAsync` 入口立即 `HidePopup`，每段 `hidePopupAfter:false`
+- **防误发 v**：`SendCtrlVPaste` / `SendShiftInsertPaste` 拆分为「先释放修饰键 + 1ms 让步 → 再发组合键」两次 `SendInput`，避免目标先收到裸 V
+- **入队卡顿**：`AutoBatchEnqueueIfNeeded(fromClipboardMonitor: true)` 跳过 `SchedulePushBatchQueueHeadIfChanged`，避免与源应用 `OpenClipboard` 抢锁触发 `CLIPBRD_E_CANT_OPEN` 多次重试
+
+### 剪贴板呼出
+
+- **Word 二次呼出错位修复**：`PositionPopup` 优先 `TryGetCaretByAutomation`（UIA TextPattern），再回退 `GetGUIThreadInfo` / `AttachThreadInput + GetCaretPos`；UIA 超时放宽到 500ms，启动时 `WarmUpUiaCaretProxy` 预热
+- **首帧不闪**：`ShowPopup` 设 `Opacity=0` 后再 `Show()`，定位完成后再恢复显示；新增 H23 调试日志覆盖每条分支
+
 ## [1.5.1] - 2026-04-23
 
 ### 文件对话框跳转

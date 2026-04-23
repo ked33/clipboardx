@@ -235,7 +235,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.5.1"   # 与 csproj 同步后改这里
+$v = "1.5.2"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -295,6 +295,14 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.5.2
+
+- **批量粘贴 · 多图/多文件合并**：相邻多张图片落盘为 PNG 并入 **FileDropList**，相邻文件直接合并路径，相邻图+文件混合统一走 FileDropList；从「N 次写入 + N 次粘贴」降为 **1 次**，根治多图场景在 Word 中的「漏粘 / 重复粘 / 出现字符 v」问题
+- **批量粘贴 · 段间稳定性**：以剪贴板序列号 + 「目标 OpenClipboard」为信号 `WaitForTargetClipboardConsumeAsync` 等待目标消费上一段（图片段上限 600ms、文本段 350ms），替代固定 22ms 让步；批量入口立即 Hide，避免每段反复抢前台
+- **批量粘贴 · 防误触发 v**：`SendCtrlVPaste` / `SendShiftInsertPaste` 拆为「先释放修饰键 + 1ms 让步 → 再发组合键」两次 SendInput
+- **剪贴板呼出 · Word 二次错位修复**：`PositionPopup` 优先走 **UIA TextPattern** 取文档光标（再退回 GUIThreadInfo / AttachThreadInput），UIA 超时放宽到 500ms 并启动时预热；首帧 `Opacity=0` 消除位置跳变
+- **批量粘贴 · 入队卡顿**：`AutoBatchEnqueueIfNeeded` 来自剪贴板监控时跳过 `SchedulePushBatchQueueHeadIfChanged`，避免与源应用 OpenClipboard 互锁触发 8×55ms 重试
 
 ### v1.5.1
 
