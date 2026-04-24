@@ -214,6 +214,27 @@ internal sealed class ClipboardHistoryStore
         }
     }
 
+    /// <summary>就地更新文本条目的内容（entry_type 仍为文本）。</summary>
+    public void TryUpdateText(long persistedId, string text)
+    {
+        if (persistedId <= 0) return;
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "UPDATE clipboard_history SET text_content = @t WHERE id = @id AND entry_type = @et";
+            cmd.Parameters.AddWithValue("@t", text);
+            cmd.Parameters.AddWithValue("@id", persistedId);
+            cmd.Parameters.AddWithValue("@et", (int)EntryType.Text);
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
     public void DeleteAll()
     {
         try

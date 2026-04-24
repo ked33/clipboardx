@@ -86,6 +86,13 @@ public partial class PopupWindow : Window
     private static PopupWindow? s_popupWinEventOwner;
 
     private bool _isSettingClipboard;
+    /// <summary>最近一次自写完成时的剪贴板序列号；OnClipboardUpdate 看到序列号 ≤ 此值则视为自写回波。
+    /// 解决 _isSettingClipboard 推迟清旗仍偶发漏标的根因（WPF SystemIdle 与 Win32 消息泵相对顺序并不严格保证）。</summary>
+    private uint _lastSelfWriteClipboardSeq;
+    /// <summary>最近一次自写的时间戳（TickCount64 ms），与 <see cref="_lastSelfWriteClipboardSeq"/> 配合做兜底窗口。</summary>
+    private long _lastSelfWriteTickMs;
+    /// <summary>自写回波时间窗（ms）：序列号未变 + 时间窗内即视为自写。</summary>
+    private const int SelfWriteEchoWindowMs = 500;
     /// <summary>从历史粘贴整段流程中：禁止监控线程读剪贴板，避免 Contains/Get 与即将执行的 Set 在同 UI 线程上交错 OpenClipboard。</summary>
     private bool _pasteInProgress;
     /// <summary>连续粘贴多段（批量/队列）时保持 true，整轮结束后才清除 <see cref="_pasteInProgress"/>，避免段间剪贴板回波或 FIFO 自动入队插队。</summary>
@@ -120,6 +127,14 @@ public partial class PopupWindow : Window
     /// </summary>
     private bool _awaitHotkeyAltChordCleanup;
     private long _hotkeyAltChordCleanupDeadlineTick;
+    /// <summary>与 RegisterHotKey 的 WM_HOTKEY 并行时防抖，避免 CycleBatchPasteMode 连跳两档。</summary>
+    private long _cycleBatchPasteDebounceTick;
+    /// <summary>与 WM_HOTKEY 并行时防抖，避免 TogglePopup 连切两次。</summary>
+    private long _togglePopupDebounceTick;
+    /// <summary>
+    /// 主面板吞掉 Alt KeyDown 后，系统往往仍报告 Alt 未按下；锁存到 Alt KeyUp，供 Alt+/、Alt+` 等与 VkToChar 防录入对齐。
+    /// </summary>
+    private bool _swallowedMenuAltLatch;
     private readonly List<(Border Row, Action Activate)> _contextMenuNav = new();
     private int _contextNavIndex;
     /// <summary>当前标为「待二次 Del 删除」的条目，与 <see cref="ClipboardEntry.IsPendingDelete"/> 同步。</summary>
@@ -332,6 +347,7 @@ public partial class PopupWindow : Window
 #endif
         UpdateEmptyState();
         UpdateBatchHeaderUi();
+        TextEntryEditPopup.CustomPopupPlacementCallback = TextEntryEditCustomPlacement;
     }
 
     public void Cleanup()
@@ -498,6 +514,11 @@ public partial class PopupWindow : Window
     private ClipboardEntry? _phraseEditEntry;
     private string _phraseEditBuffer = "";
     private const int PhraseEditMaxLen = 200;
+    private ClipboardEntry? _entryTextEditTarget;
+    /// <summary>打开「编辑文本」前记录的原宿主 HWND，关闭编辑后用于恢复键盘焦点（宿主内光标位置由系统保留）。</summary>
+    private IntPtr _textEditRestoreForegroundHwnd;
+    /// <summary>编辑文本期间临时去掉 WS_EX_NOACTIVATE，关闭编辑后需写回。</summary>
+    private bool _wsExNoActivateLiftedForEntryTextEdit;
 
     private void RefreshPhraseEditDisplay()
     {
@@ -590,6 +611,158 @@ public partial class PopupWindow : Window
         _phraseEditBuffer = "";
     }
 
+    private void BeginEntryTextEdit(ClipboardEntry entry)
+    {
+        if (entry.Type != EntryType.Text) return;
+        _textEditRestoreForegroundHwnd = IntPtr.Zero;
+        if (_targetWindow != IntPtr.Zero && Win32.IsWindow(_targetWindow) && _targetWindow != _hwnd)
+            _textEditRestoreForegroundHwnd = _targetWindow;
+
+        CloseContextMenuPopup();
+        _entryTextEditTarget = entry;
+        EntryTextEditBox.Text = entry.TextContent ?? "";
+        TextEntryEditPopup.IsOpen = true;
+    }
+
+    private void TextEntryEditPopup_Opened(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            LiftNoActivateForEntryTextEditIfNeeded();
+            Win32.SetForegroundWindowAggressive(_hwnd);
+            EntryTextEditBox.Focus();
+            System.Windows.Input.Keyboard.Focus(EntryTextEditBox);
+            EntryTextEditBox.SelectAll();
+        }, DispatcherPriority.Input);
+    }
+
+    /// <summary>编辑弹窗紧贴 MainBorder 右侧，留出间隙避免被主面板遮挡。</summary>
+    private CustomPopupPlacement[] TextEntryEditCustomPlacement(
+        System.Windows.Size popupSize,
+        System.Windows.Size targetSize,
+        System.Windows.Point offset)
+    {
+        const double gap = 14;
+        return new[]
+        {
+            new CustomPopupPlacement(new System.Windows.Point(targetSize.Width + gap, 0), PopupPrimaryAxis.Vertical)
+        };
+    }
+
+    private void LiftNoActivateForEntryTextEditIfNeeded()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        var ex = Win32.GetWindowLongPtr(_hwnd, Win32.GWL_EXSTYLE);
+        var v = ex.ToInt64();
+        if ((v & Win32.WS_EX_NOACTIVATE) == 0) return;
+        _wsExNoActivateLiftedForEntryTextEdit = true;
+        Win32.SetWindowLongPtr(_hwnd, Win32.GWL_EXSTYLE, new IntPtr(v & ~Win32.WS_EX_NOACTIVATE));
+    }
+
+    private void RestoreNoActivateAfterEntryTextEditIfLifted()
+    {
+        if (!_wsExNoActivateLiftedForEntryTextEdit) return;
+        _wsExNoActivateLiftedForEntryTextEdit = false;
+        if (_hwnd == IntPtr.Zero) return;
+        var ex = Win32.GetWindowLongPtr(_hwnd, Win32.GWL_EXSTYLE);
+        Win32.SetWindowLongPtr(_hwnd, Win32.GWL_EXSTYLE, new IntPtr(ex.ToInt64() | Win32.WS_EX_NOACTIVATE));
+    }
+
+    private void RestoreFocusAfterTextEntryEdit()
+    {
+        RestoreNoActivateAfterEntryTextEditIfLifted();
+        var h = _textEditRestoreForegroundHwnd;
+        _textEditRestoreForegroundHwnd = IntPtr.Zero;
+        if (h == IntPtr.Zero || h == _hwnd || !Win32.IsWindow(h)) return;
+        Win32.SetForegroundWindowAggressive(h);
+    }
+
+    private void CommitEntryTextEdit()
+    {
+        if (_entryTextEditTarget is not ClipboardEntry entry) return;
+        var newText = EntryTextEditBox.Text ?? "";
+        if (string.IsNullOrWhiteSpace(newText))
+        {
+            System.Windows.MessageBox.Show("文本不能为空。", "编辑文本",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            Dispatcher.BeginInvoke(() =>
+            {
+                EntryTextEditBox.Focus();
+                System.Windows.Input.Keyboard.Focus(EntryTextEditBox);
+            }, DispatcherPriority.Input);
+            return;
+        }
+
+        var oldText = entry.TextContent ?? "";
+        if (entry.IsQuickPaste)
+        {
+            var phrase = entry.ShortcutPhrase ?? "";
+            for (var i = 0; i < _quickPastes.Count; i++)
+            {
+                if (_quickPastes[i].Content != oldText) continue;
+                if (!string.IsNullOrEmpty(phrase) && _quickPastes[i].Phrase != phrase) continue;
+                var ph = _quickPastes[i].Phrase;
+                _quickPastes[i] = new QuickPasteEntry { Phrase = ph, Content = newText };
+                break;
+            }
+            entry.TextContent = newText;
+            SaveQuickPastes();
+        }
+        else
+        {
+            entry.TextContent = newText;
+            if (entry.PersistedId is long pid)
+                _historyStore.TryUpdateText(pid, newText);
+        }
+
+        entry.RaiseTextDisplayPropertiesChanged();
+        RefreshFilter();
+        TextEntryEditPopup.IsOpen = false;
+        _entryTextEditTarget = null;
+        Dispatcher.BeginInvoke(RestoreFocusAfterTextEntryEdit, DispatcherPriority.Background);
+    }
+
+    private void CancelEntryTextEdit()
+    {
+        TextEntryEditPopup.IsOpen = false;
+        _entryTextEditTarget = null;
+        Dispatcher.BeginInvoke(RestoreFocusAfterTextEntryEdit, DispatcherPriority.Background);
+    }
+
+    private void CtxEditText_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        ActivateCtxEditText();
+    }
+
+    private void ActivateCtxEditText()
+    {
+        CloseContextMenuPopup();
+        if (_contextEntry is { Type: EntryType.Text })
+            BeginEntryTextEdit(_contextEntry);
+    }
+
+    private void EntryTextEditSave_Click(object sender, MouseButtonEventArgs e) => CommitEntryTextEdit();
+
+    private void EntryTextEditCancel_Click(object sender, MouseButtonEventArgs e) => CancelEntryTextEdit();
+
+    private void EntryTextEditBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            e.Handled = true;
+            CancelEntryTextEdit();
+            return;
+        }
+
+        if (e.Key == System.Windows.Input.Key.Enter
+            && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            CommitEntryTextEdit();
+        }
+    }
+
     #endregion
 
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
@@ -606,7 +779,9 @@ public partial class PopupWindow : Window
         {
             case Win32.WM_MOUSEACTIVATE:
                 handled = true;
-                return new IntPtr(Win32.MA_NOACTIVATE);
+                return TextEntryEditPopup.IsOpen
+                    ? new IntPtr(Win32.MA_ACTIVATE)
+                    : new IntPtr(Win32.MA_NOACTIVATE);
 
             case Win32.WM_DPICHANGED:
                 // 允许紧随其后的 WINDOWPOSCHANGING 带上位置/尺寸，否则会与 WM_DPICHANGED 建议矩形冲突，跨屏缩放时表现为突然缩放、位置漂移。
@@ -753,6 +928,37 @@ public partial class PopupWindow : Window
         return default;
     }
 
+    /// <summary>记录一次自写后的剪贴板序列号与时间戳，供 OnClipboardUpdate 回波识别兜底。</summary>
+    private void MarkSelfWroteClipboard()
+    {
+        _lastSelfWriteClipboardSeq = Win32.GetClipboardSequenceNumber();
+        _lastSelfWriteTickMs = Environment.TickCount64;
+    }
+
+    /// <summary>批量粘贴的合并产物（合并字符串 / 合并 FileDropList）作为新条目入库，与系统剪贴板保持一致。
+    /// 必须在 UI 线程调用；调用方需保证 OnClipboardUpdate 路径已被 <see cref="MarkSelfWroteClipboard"/> 拦截，避免重复入库。</summary>
+    private void InsertBatchMergedEntry(ClipboardEntry entry)
+    {
+        if (entry.Type == EntryType.Text)
+        {
+            if (string.IsNullOrEmpty(entry.TextContent)) return;
+            DeduplicateText(entry.TextContent);
+        }
+        else if (entry.Type == EntryType.Files)
+        {
+            if (entry.FilePaths is null || entry.FilePaths.Length == 0) return;
+            DeduplicateFiles(entry.FilePaths);
+        }
+        else
+        {
+            return;
+        }
+        _allItems.Insert(0, entry);
+        TrimItems();
+        _historyStore.TryInsert(entry);
+        RefreshFilter();
+    }
+
     private void OnClipboardUpdate()
     {
         // 仅跳过：不得在 async Set 尚未收尾时清 _isSettingClipboard，否则下一条 WM_CLIPBOARDUPDATE 会当作用户复制 → AutoBatchEnqueue → TryPush 风暴与 CLIPBRD_E 重试卡顿。
@@ -760,6 +966,17 @@ public partial class PopupWindow : Window
         {
             ClipboardDiagnosticsLog.Write("monitor skip self_set");
             return;
+        }
+        // 兜底：_isSettingClipboard 推迟清旗仍可能与本拍 WM 相对错位；序列号 ≤ 自写记录 + 时间窗内 → 仍判定自写回波。
+        if (_lastSelfWriteClipboardSeq != 0)
+        {
+            var nowSeq = Win32.GetClipboardSequenceNumber();
+            var dtMs = Environment.TickCount64 - _lastSelfWriteTickMs;
+            if (nowSeq == _lastSelfWriteClipboardSeq && dtMs >= 0 && dtMs <= SelfWriteEchoWindowMs)
+            {
+                ClipboardDiagnosticsLog.Write($"monitor skip self_set_echo seq={nowSeq} dtMs={dtMs}");
+                return;
+            }
         }
         if (ClipboardGate.IsActive) return;
         if (_pasteInProgress)
@@ -1188,6 +1405,9 @@ public partial class PopupWindow : Window
     /// <summary>顺序：普通（关队列）→ LIFO → FIFO → 普通。全局快捷键由 App 侧消息窗口注册，与顶栏左键相同。</summary>
     public void CycleBatchPasteMode()
     {
+        var now = Environment.TickCount64;
+        if (now - _cycleBatchPasteDebounceTick < 45) return;
+        _cycleBatchPasteDebounceTick = now;
         var next = GetBatchMode() switch
         {
             BatchPasteQueueMode.Off => BatchPasteQueueMode.Lifo,
@@ -1696,6 +1916,9 @@ public partial class PopupWindow : Window
         try
         {
             var opIndex = 0;
+            // 任一段是「合并粘贴」（≥2 条文本聚合 / ≥2 条图+文件聚合）时，已通过 InsertBatchMergedEntry 把合并产物置顶；
+            // 此时不能再对原选中条目做置顶重排，否则会把它们盖到合并条目之前。
+            bool anyMergedSegment = false;
             for (var s = 0; s < segments.Count; s++)
             {
                 var seg = segments[s];
@@ -1705,6 +1928,7 @@ public partial class PopupWindow : Window
                 {
                     if (seg.Count >= 2)
                     {
+                        anyMergedSegment = true;
                         await RunAllTextBatchSingleClipboardAsync(
                             seg,
                             newlineAfterEachTextWhenCtrlEnter,
@@ -1736,6 +1960,7 @@ public partial class PopupWindow : Window
                     }
                     else
                     {
+                        anyMergedSegment = true;
                         await RunBatchImagesAndFilesAsFileDropAsync(
                             seg,
                             hidePopupAfter: false,
@@ -1763,7 +1988,9 @@ public partial class PopupWindow : Window
                 }
             }
 
-            if (items.Count > 0)
+            // 简化原则：本轮有「合并粘贴段」时，合并产物已由 InsertBatchMergedEntry 顶到列表第 0 位；
+            // 不再对原选中条目做置顶重排，让它们保持原位（用户期望：仅合并字符串顶上去，原条目不动）。
+            if (items.Count > 0 && !anyMergedSegment)
                 ApplyDeferredSequentialPasteHistoryOrder(items);
 
             if (items.Count > 0)
@@ -1818,7 +2045,7 @@ public partial class PopupWindow : Window
             if (_targetWindow != IntPtr.Zero)
                 Win32.SetForegroundWindowAggressive(_targetWindow);
 
-            await Task.Delay(26);
+            // 让出一帧给前台切换，比固定 26ms 更短且更稳定。
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
 
             if (_hwnd != IntPtr.Zero)
@@ -1831,18 +2058,31 @@ public partial class PopupWindow : Window
                 maxRetries: 10,
                 delayMs: 45,
                 clipNudgeHwnd: _hwnd);
-            await Task.Delay(10);
-            _isSettingClipboard = false;
+            bool insertedMerged = false;
+            if (ok)
+            {
+                MarkSelfWroteClipboard();
+                // 合并产物入库：与系统剪贴板状态对齐，便于用户后续复用整段。回波拦截（旗 + 序列号）确保 OnClipboardUpdate 不会重复入库。
+                if (ordered.Count >= 2)
+                {
+                    InsertBatchMergedEntry(new ClipboardEntry { Type = EntryType.Text, TextContent = combined });
+                    insertedMerged = true;
+                }
+            }
+            // 不立刻清 _isSettingClipboard：必须等本次 SetText 触发的 WM_CLIPBOARDUPDATE 派发完，
+            // 否则该消息到达时旗已落，OnClipboardUpdate 会把合并文本当成「用户复制」入库。
+            // 用 SystemIdle 排队保证本拍消息泵已处理完后再清；序列号 + 时间窗作为兜底。
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
 
             if (ok)
             {
-                await Task.Delay(14);
                 SendPasteToTarget();
             }
 
-            if (applyHistoryReorder)
+            // 已插入合并条目时不再对原条目重排：用户期望「仅合并字符串顶上去，原条目不动」。
+            if (applyHistoryReorder && !insertedMerged)
                 ApplyDeferredSequentialPasteHistoryOrder(ordered);
-            await Task.Delay(80);
+            await Task.Delay(20);
         }
         finally
         {
@@ -1914,7 +2154,6 @@ public partial class PopupWindow : Window
             if (_targetWindow != IntPtr.Zero)
                 Win32.SetForegroundWindowAggressive(_targetWindow);
 
-            await Task.Delay(40);
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
 
             if (_hwnd != IntPtr.Zero)
@@ -1927,12 +2166,26 @@ public partial class PopupWindow : Window
                 maxRetries: 10,
                 delayMs: 50,
                 clipNudgeHwnd: _hwnd);
-            await Task.Delay(12);
-            _isSettingClipboard = false;
+            bool insertedMerged = false;
+            if (ok)
+            {
+                MarkSelfWroteClipboard();
+                // 合并产物入库：与文本批量对齐。注意此处的 paths 既包含原始文件路径，也包含图片落盘的临时 PNG 路径。
+                if (ordered.Count >= 2)
+                {
+                    var arr = new string[paths.Count];
+                    paths.CopyTo(arr, 0);
+                    InsertBatchMergedEntry(new ClipboardEntry { Type = EntryType.Files, FilePaths = arr });
+                    insertedMerged = true;
+                }
+            }
+            // 同 RunAllTextBatchSingleClipboardAsync：延迟到 SystemIdle 清旗 + 序列号兜底，避免 WM_CLIPBOARDUPDATE 漏标自写而入历史。
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
 
             if (ok)
             {
-                await Task.Delay(30);
+                // FileDrop 写入 → 目标 Open 通常需要 1 帧；用 Background 让一帧而非固定 30ms。
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
                 SendPasteToTarget();
             }
             else
@@ -1944,9 +2197,9 @@ public partial class PopupWindow : Window
                 }
             }
 
-            if (applyHistoryReorder)
+            if (applyHistoryReorder && !insertedMerged)
                 ApplyDeferredSequentialPasteHistoryOrder(ordered);
-            await Task.Delay(80);
+            await Task.Delay(20);
         }
         finally
         {
@@ -2096,6 +2349,9 @@ public partial class PopupWindow : Window
 
     public void TogglePopup()
     {
+        var now = Environment.TickCount64;
+        if (now - _togglePopupDebounceTick < 45) return;
+        _togglePopupDebounceTick = now;
         if (_isPopupVisible) HidePopup(closingViaClipboardHotkey: true);
         else ShowPopup();
     }
@@ -2279,6 +2535,7 @@ public partial class PopupWindow : Window
 
     private void HidePopup(bool closingViaClipboardHotkey = false)
     {
+        _swallowedMenuAltLatch = false;
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;
         UninstallMouseHook();
@@ -2303,6 +2560,10 @@ public partial class PopupWindow : Window
         PhraseEditPopup.IsOpen = false;
         _phraseEditEntry = null;
         _phraseEditBuffer = "";
+        TextEntryEditPopup.IsOpen = false;
+        _entryTextEditTarget = null;
+        _textEditRestoreForegroundHwnd = IntPtr.Zero;
+        RestoreNoActivateAfterEntryTextEditIfLifted();
         ClearPendingDelete();
         if (closingViaClipboardHotkey && (_hotkeyModifiers & Win32.MOD_ALT) != 0)
         {
@@ -3136,7 +3397,7 @@ public partial class PopupWindow : Window
                         System.Windows.Threading.DispatcherPriority.Background, () =>
                         {
                             if (_isPopupVisible && !_clickReceivedByPopup
-                                && !ContextPopup.IsOpen && !PhraseEditPopup.IsOpen)
+                                && !ContextPopup.IsOpen && !PhraseEditPopup.IsOpen && !TextEntryEditPopup.IsOpen)
                                 HidePopup();
                         });
                 }
@@ -4446,6 +4707,41 @@ public partial class PopupWindow : Window
     private static bool IsMenuAltVk(uint vk) =>
         vk == 0x12 || vk == 0xA4 || vk == 0xA5;
 
+    /// <summary>批量子菜单/右键菜单打开时：钩子内按设置匹配与 RegisterHotKey 相同的组合（Alt 已由本钩吞掉，宿主收不到）。</summary>
+    private bool TryDispatchRegisteredAppHotkeyChordFromHook(uint vkCode)
+    {
+        if (_appSettings == null) return false;
+#if CLIPX_CLIPBOARD
+        if (HotkeyChordMatches(_hotkeyModifiers) && vkCode == _hotkeyKey)
+        {
+            Dispatcher.BeginInvoke(TogglePopup);
+            return true;
+        }
+#endif
+        if (HotkeyChordMatches(_appSettings.BatchModeCycleHotkeyModifiers)
+            && vkCode == _appSettings.BatchModeCycleHotkeyKey)
+        {
+            Dispatcher.BeginInvoke(CycleBatchPasteMode);
+            return true;
+        }
+        if (HotkeyChordMatches(_fileJumpHotkeyModifiers) && vkCode == _fileJumpHotkeyKey)
+        {
+            Dispatcher.BeginInvoke(TryJumpFileDialogToLastFolder);
+            return true;
+        }
+        if (HotkeyChordMatches(_panelPageScrollUpModifiers) && vkCode == _panelPageScrollUpKey)
+        {
+            Dispatcher.BeginInvoke(() => ScrollPage(-1));
+            return true;
+        }
+        if (HotkeyChordMatches(_panelPageScrollDownModifiers) && vkCode == _panelPageScrollDownKey)
+        {
+            Dispatcher.BeginInvoke(() => ScrollPage(1));
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// 低级钩子里拦截物理 Alt KeyUp 后，注入 Ctrl Down → Ctrl Up → Alt Up（均带注入标志），
     /// 供宿主将松键视为带 Ctrl 的收尾而非单独 Alt，避免 VS Code 等菜单栏抢焦点。
@@ -4583,8 +4879,29 @@ public partial class PopupWindow : Window
         if (_activeFileJumpPicker != null)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
+        if (TextEntryEditPopup.IsOpen)
+        {
+            if (isKeyDown)
+            {
+                if (kb.vkCode == Win32.VK_ESCAPE)
+                {
+                    Dispatcher.BeginInvoke(CancelEntryTextEdit);
+                    return (IntPtr)1;
+                }
+
+                if (kb.vkCode == Win32.VK_RETURN && IsPhysicalCtrlDown())
+                {
+                    Dispatcher.BeginInvoke(CommitEntryTextEdit);
+                    return (IntPtr)1;
+                }
+            }
+
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        }
+
         if (isKeyUp && IsMenuAltVk(kb.vkCode))
         {
+            _swallowedMenuAltLatch = false;
             if (PhraseEditPopup.IsOpen)
                 return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
@@ -4604,7 +4921,7 @@ public partial class PopupWindow : Window
                 _ctxAltCloseMenuArmed = false;
                 _ctxAltAwaitRelease = false;
                 _ctxAltComboDuringRelease = false;
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return (IntPtr)1;
             }
 
             if (ContextPopup.IsOpen)
@@ -4614,14 +4931,15 @@ public partial class PopupWindow : Window
                 _ctxAltCloseMenuArmed = false;
                 _ctxAltAwaitRelease = false;
                 _ctxAltComboDuringRelease = false;
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return (IntPtr)1;
             }
 
             if (_ctxAltAwaitRelease && !_ctxAltComboDuringRelease)
                 Dispatcher.BeginInvoke(TryOpenBatchOrContextMenuFromKeyboard);
             _ctxAltAwaitRelease = false;
             _ctxAltComboDuringRelease = false;
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            // 吞掉 Alt 松开，避免宿主在未收到 Down 时仍收到 Up，或双次触发菜单栏
+            return (IntPtr)1;
         }
 
         if (!isKeyDown)
@@ -4705,8 +5023,11 @@ public partial class PopupWindow : Window
             {
                 _ctxAltCloseMenuArmed = true;
                 _ctxAltComboDuringRelease = false;
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return (IntPtr)1;
             }
+
+            if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
+                return (IntPtr)1;
 
             bool altPhyB = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
                 || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
@@ -4739,8 +5060,11 @@ public partial class PopupWindow : Window
             {
                 _ctxAltCloseMenuArmed = true;
                 _ctxAltComboDuringRelease = false;
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+                return (IntPtr)1;
             }
+
+            if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
+                return (IntPtr)1;
 
             bool altPhy = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
                 || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
@@ -4767,14 +5091,17 @@ public partial class PopupWindow : Window
             }
         }
 
-        if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !ContextPopup.IsOpen && !BatchMenuPopup.IsOpen)
+        if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !TextEntryEditPopup.IsOpen && !ContextPopup.IsOpen && !BatchMenuPopup.IsOpen)
         {
+            _swallowedMenuAltLatch = true;
             if (!_awaitHotkeyAltChordCleanup)
             {
                 _ctxAltAwaitRelease = true;
                 _ctxAltComboDuringRelease = false;
             }
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            // 吞掉 Alt 按下，不透传到宿主，避免 Word/浏览器等抢菜单焦点、Access Key 导致剪贴板面板失焦。
+            // 单按 Alt 松开后仍由上方 KeyUp 分支打开本面板右键/批量菜单（_ctxAltAwaitRelease）。
+            return (IntPtr)1;
         }
 
         if (_ctxAltAwaitRelease && !IsMenuAltVk(kb.vkCode))
@@ -4785,20 +5112,24 @@ public partial class PopupWindow : Window
             or 0x5B or 0x5C)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
-        if (HotkeyModifiersActive(_panelPageScrollUpModifiers) && kb.vkCode == _panelPageScrollUpKey)
+        if (HotkeyChordMatches(_panelPageScrollUpModifiers) && kb.vkCode == _panelPageScrollUpKey)
         {
             Dispatcher.BeginInvoke(() => ScrollPage(-1));
             return (IntPtr)1;
         }
 
-        if (HotkeyModifiersActive(_panelPageScrollDownModifiers) && kb.vkCode == _panelPageScrollDownKey)
+        if (HotkeyChordMatches(_panelPageScrollDownModifiers) && kb.vkCode == _panelPageScrollDownKey)
         {
             Dispatcher.BeginInvoke(() => ScrollPage(1));
             return (IntPtr)1;
         }
 
-        bool ctrlHeld = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0;
-        bool altHeld = (Win32.GetAsyncKeyState(0x12) & 0x8000) != 0;
+        // 必须在 IsPanelModifierDown / ctrlHeld||altHeld 放行之前：否则 Alt+`、Alt+/ 会 CallNextHookEx 进搜索框打出字符。
+        if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
+            return (IntPtr)1;
+
+        bool ctrlHeld = IsPhysicalCtrlDown();
+        bool altHeld = AltEffectiveForRegisteredChord();
 
         if (IsPanelModifierDown())
         {
@@ -4830,7 +5161,17 @@ public partial class PopupWindow : Window
             return (IntPtr)1;
         }
 
-        if (ctrlHeld || altHeld)
+        // Alt+ 注册热键已在上方 TryDispatch 处理。其余纯 Alt 组合吞掉，避免误入搜索框或激活宿主菜单；
+        // Ctrl+Alt 放行；Alt+Tab / Alt+F4 尽量交给系统。
+        if (ctrlHeld && altHeld)
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        if (altHeld)
+        {
+            if (kb.vkCode is 0x09 or 0x73)
+                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+            return (IntPtr)1;
+        }
+        if (ctrlHeld)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         switch (kb.vkCode)
@@ -4929,30 +5270,52 @@ public partial class PopupWindow : Window
 
         var ch = VkToChar(kb.vkCode, kb.scanCode);
         if (ch.HasValue)
+        {
+            if (AltEffectiveForRegisteredChord())
+                return (IntPtr)1;
             Dispatcher.BeginInvoke(() => { _searchText += ch.Value; RefreshFilter(); });
+        }
 
         return (IntPtr)1;
     }
 
-    /// <summary>与 <see cref="AppSettings.FormatHotkey"/> 注册语义一致：修饰键状态须与掩码完全一致。</summary>
-    private static bool HotkeyModifiersActive(uint requiredMods)
+    private static bool IsPhysicalCtrlDown() =>
+        (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0
+        || (Win32.GetAsyncKeyState(0xA2) & 0x8000) != 0
+        || (Win32.GetAsyncKeyState(0xA3) & 0x8000) != 0;
+
+    private bool AltPhysicallyDown() =>
+        ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
+        || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
+        || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
+
+    /// <summary>物理 Alt 或主面板吞 Alt Down 后的锁存（吞键后 GetAsyncKeyState(Alt) 常为假，导致 Alt+/ 误进搜索）。</summary>
+    private bool AltEffectiveForRegisteredChord() => AltPhysicallyDown() || _swallowedMenuAltLatch;
+
+    /// <summary>
+    /// 与 RegisterHotKey 的 fsModifiers 一致；含 <see cref="_swallowedMenuAltLatch"/> 与 AltGr（LCtrl+RAlt）兜底。
+    /// </summary>
+    private bool HotkeyChordMatches(uint requiredMods)
     {
-        bool ctrl = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0;
+        bool ctrl = IsPhysicalCtrlDown();
         bool shift = ((Win32.GetAsyncKeyState(0x10) & 0x8000) != 0)
             || ((Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0)
             || ((Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0);
-        bool alt = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-            || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
-            || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
+        bool alt = AltEffectiveForRegisteredChord();
         bool win = ((Win32.GetAsyncKeyState(0x5B) & 0x8000) != 0)
             || ((Win32.GetAsyncKeyState(0x5C) & 0x8000) != 0);
-
         bool reqCtrl = (requiredMods & Win32.MOD_CONTROL) != 0;
         bool reqShift = (requiredMods & Win32.MOD_SHIFT) != 0;
         bool reqAlt = (requiredMods & Win32.MOD_ALT) != 0;
         bool reqWin = (requiredMods & Win32.MOD_WIN) != 0;
-
-        return ctrl == reqCtrl && shift == reqShift && alt == reqAlt && win == reqWin;
+        if (ctrl == reqCtrl && shift == reqShift && alt == reqAlt && win == reqWin)
+            return true;
+        if ((requiredMods & Win32.MOD_ALT) == 0 || (requiredMods & Win32.MOD_CONTROL) != 0)
+            return false;
+        bool physAlt = AltPhysicallyDown();
+        if (shift != reqShift || win != reqWin)
+            return false;
+        return physAlt && IsPhysicalCtrlDown();
     }
 
     private bool IsPanelModifierDown()
@@ -6133,6 +6496,9 @@ public partial class PopupWindow : Window
         CtxPasteJsonFileBorder.Visibility = entry.Type == EntryType.Text && IsWellFormedJson(entry.TextContent)
             ? Visibility.Visible
             : Visibility.Collapsed;
+        CtxEditTextBorder.Visibility = entry.Type == EntryType.Text
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void OpenContextMenuFromKeyboard()
@@ -6177,6 +6543,7 @@ public partial class PopupWindow : Window
         Add(CtxPasteBorder, ActivateCtxPaste);
         Add(CtxPasteAsFileBorder, ActivateCtxPasteAsFile);
         Add(CtxPasteJsonFileBorder, ActivateCtxPasteJsonFile);
+        Add(CtxEditTextBorder, ActivateCtxEditText);
         Add(CtxShortcutBorder, ActivateCtxShortcut);
         Add(CtxDeleteBorder, ActivateCtxDelete);
     }

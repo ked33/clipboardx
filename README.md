@@ -235,7 +235,7 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 ```powershell
 # 在仓库根目录执行
-$v = "1.5.2"   # 与 csproj 同步后改这里
+$v = "1.5.3"   # 与 csproj 同步后改这里
 Set-ExecutionPolicy -Scope Process -Bypass -Force
 .\native\ShellNavigate\build.ps1
 
@@ -295,6 +295,10 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 ## 更新记录
 
 结构化列表见 **[CHANGELOG.md](CHANGELOG.md)**（推送 `v*` 标签后，GitHub Release 会从中截取当前版本的 **更新内容**）。以下为 README 内便于浏览的摘录；安装包见 **[Releases](https://github.com/chaojimct/clipboardx/releases)**。
+
+### v1.5.3
+
+- **剪贴板 · 就地编辑文本**：右键「编辑文本」改内容并写回历史/数据库；编辑时临时允许主窗体激活以取得键盘焦点；弹窗靠主面板右侧定位；**Esc** 关闭、**Ctrl+Enter** 保存
 
 ### v1.5.2
 

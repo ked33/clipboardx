@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-04-24
+
+### 剪贴板 · 历史文本就地编辑
+
+- **编辑入口**：列表项右键「编辑文本」修改内容；写回列表预览与检索，普通历史项同步 **SQLite**（`TryUpdateText`）；快捷短语同步 `_quickPastes`
+- **键盘焦点**：编辑期间临时去掉主窗 **`WS_EX_NOACTIVATE`**，并将 **`WM_MOUSEACTIVATE`** 改为可激活，配合 **`SetForegroundWindowAggressive`**，使光标进入多行编辑框；关闭编辑后恢复样式并把前台还回宿主
+- **布局**：编辑弹窗改为 **`PlacementMode.Custom`**，相对 **`MainBorder`** 右侧留出间隙，减轻被主面板遮挡
+- **快捷键**：**Esc** 取消、**Ctrl+Enter** 保存（`PreviewKeyDown` 与低级键盘钩双重处理，普通 Enter 仍换行）
+
 ## [1.5.2] - 2026-04-23
 
 ### 批量粘贴

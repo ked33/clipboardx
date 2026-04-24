@@ -51,6 +51,13 @@ public class ClipboardEntry : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TimeAgo)));
     }
 
+    /// <summary>就地修改 <see cref="TextContent"/> 后通知列表预览与检索绑定刷新。</summary>
+    public void RaiseTextDisplayPropertiesChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SearchableText)));
+    }
+
     private bool _isPendingDelete;
     /// <summary>Del 第一次按下时为 true，表示待二次确认删除（删除线提示）。</summary>
     public bool IsPendingDelete

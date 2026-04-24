@@ -10,6 +10,7 @@ internal static class Win32
     public const int WS_EX_TOOLWINDOW = 0x00000080;
 
     public const int WM_MOUSEACTIVATE = 0x0021;
+    public const int MA_ACTIVATE = 1;
     public const int MA_NOACTIVATE = 3;
     public const int WM_CLIPBOARDUPDATE = 0x031D;
     public const int WM_HOTKEY = 0x0312;

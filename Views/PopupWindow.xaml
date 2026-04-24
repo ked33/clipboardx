@@ -361,6 +361,21 @@
                             </Border.Style>
                             <TextBlock Text="📄 粘贴为 JSON 文件（资源管理器）" Foreground="{DynamicResource PrimaryText}" FontSize="13"/>
                         </Border>
+                        <Border x:Name="CtxEditTextBorder" Padding="10,7" CornerRadius="6" Cursor="Hand"
+                                Visibility="Collapsed"
+                                MouseLeftButtonUp="CtxEditText_Click">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="✏️ 编辑文本" Foreground="{DynamicResource PrimaryText}" FontSize="13"/>
+                        </Border>
                         <Border x:Name="CtxShortcutBorder" Padding="10,7" CornerRadius="6" Cursor="Hand"
                                 MouseLeftButtonUp="CtxShortcut_Click">
                             <Border.Style>
@@ -476,6 +491,63 @@
                             </Style>
                         </Border.Style>
                         <TextBlock Text="确定" FontSize="12" Foreground="{DynamicResource AccentFg}" FontWeight="SemiBold"/>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Popup>
+
+    <!-- 文本条目：右键「编辑文本」就地修改内容并写回历史 -->
+    <Popup x:Name="TextEntryEditPopup" StaysOpen="True" Placement="Custom"
+           PlacementTarget="{Binding ElementName=MainBorder}"
+           AllowsTransparency="True"
+           Opened="TextEntryEditPopup_Opened">
+        <Border Background="{DynamicResource PopupBgBrush}" CornerRadius="12"
+                Padding="16" Margin="8,16,16,16" MinWidth="320" MaxWidth="520">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="16" ShadowDepth="3" Opacity="0.45" Color="Black"/>
+            </Border.Effect>
+            <StackPanel>
+                <TextBlock Text="✏️ 编辑文本" FontSize="14" FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,10"/>
+                <TextBlock Text="保存后将替换当前历史项（含数据库中的记录）。" FontSize="11"
+                           Foreground="{DynamicResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                <TextBox x:Name="EntryTextEditBox" AcceptsReturn="True" TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto" MinHeight="180" MaxHeight="360"
+                         FontSize="13" Padding="8,6"
+                         Background="{DynamicResource SurfaceBrush}"
+                         Foreground="{DynamicResource PrimaryText}"
+                         BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1"
+                         PreviewKeyDown="EntryTextEditBox_PreviewKeyDown"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                    <Border Padding="10,6" CornerRadius="6" Cursor="Hand" Margin="0,0,8,0"
+                            Background="{DynamicResource SurfaceBrush}"
+                            MouseLeftButtonUp="EntryTextEditCancel_Click">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="取消" FontSize="12" Foreground="{DynamicResource SecondaryText}"/>
+                    </Border>
+                    <Border Padding="10,6" CornerRadius="6" Cursor="Hand"
+                            MouseLeftButtonUp="EntryTextEditSave_Click">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{DynamicResource AccentBg}"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Opacity" Value="0.85"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="保存" FontSize="12" Foreground="{DynamicResource AccentFg}" FontWeight="SemiBold"/>
                     </Border>
                 </StackPanel>
             </StackPanel>
