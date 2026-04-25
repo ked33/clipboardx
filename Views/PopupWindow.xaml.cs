@@ -177,7 +177,6 @@ public partial class PopupWindow : Window
     private IntPtr _lastForegroundForDialogTrack = IntPtr.Zero;
 
     #region agent log
-    private static readonly object _agentDbgLock = new();
     private int _agentDbgDragMoveLogCount;
     private int _agentDbgH17WpcSkipLogCount;
     private int _agentDbgH20LogCount;
@@ -185,32 +184,20 @@ public partial class PopupWindow : Window
     private int _agentDbgH21MismatchLogCount;
     private int _agentDbgH22WpfHwndDipLogCount;
 
-    /// <summary>调试会话 NDJSON：写入项目根目录 debug-241056.log（相对 bin 向上三级）。</summary>
+    /// <summary>历史调试入口；统一转到异步诊断日志，避免同步写项目根目录造成 UI 抖动。</summary>
     private static void AgentDbgLog(string hypothesisId, string location, string message, object? data = null)
     {
         try
         {
-            var line = JsonSerializer.Serialize(new
+            var payload = JsonSerializer.Serialize(new
             {
-                sessionId = "241056",
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 hypothesisId,
                 location,
                 message,
                 data
-            }) + "\n";
-            lock (_agentDbgLock)
-            {
-                var workspaceLog = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory ?? ".", "..", "..", "..", "debug-241056.log"));
-                try
-                {
-                    File.AppendAllText(workspaceLog, line);
-                }
-                catch
-                {
-                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory ?? ".", "debug-241056.log"), line);
-                }
-            }
+            });
+            ClipboardDiagnosticsLog.Write($"agent {payload}");
         }
         catch { /* 调试日志失败不影响主流程 */ }
     }
@@ -3801,6 +3788,9 @@ public partial class PopupWindow : Window
     {
         Task.Run(() =>
         {
+            if (!WaitForFileJumpFullCollectQuietWindow(dialogHwnd, () => gen != _fileJumpHotkeyCollectGen))
+                return;
+
             List<FileJumpCandidate> full;
             try
             {
@@ -3828,6 +3818,9 @@ public partial class PopupWindow : Window
     {
         Task.Run(() =>
         {
+            if (!WaitForFileJumpFullCollectQuietWindow(dialogHwnd, () => gen != _fileJumpAutoForegroundCollectGen))
+                return;
+
             List<FileJumpCandidate> full;
             try
             {
@@ -3847,6 +3840,53 @@ public partial class PopupWindow : Window
                 TryJumpFileDialogRefreshPickerIfOpen(dialogHwnd, full);
             }, DispatcherPriority.Normal);
         });
+    }
+
+    /// <summary>
+    /// Shell.Application.Windows 会跨进程碰 Explorer；拖动文件对话框时触发会造成拖动卡顿。
+    /// 完整采集不影响首屏弹出，等待鼠标释放并稳定后再扫。
+    /// </summary>
+    private static bool WaitForFileJumpFullCollectQuietWindow(IntPtr dialogHwnd, Func<bool> shouldAbort)
+    {
+        const int maxWaitMs = 5000;
+        const int quietMs = 420;
+        const int stepMs = 60;
+        var waited = 0;
+        var quietFor = 0;
+
+        while (waited < maxWaitMs)
+        {
+            if (shouldAbort()) return false;
+
+            var busy = IsPrimaryMouseButtonDown() || IsWindowThreadInMoveSize(dialogHwnd);
+            if (busy)
+                quietFor = 0;
+            else
+            {
+                quietFor += stepMs;
+                if (quietFor >= quietMs)
+                    return true;
+            }
+
+            Thread.Sleep(stepMs);
+            waited += stepMs;
+        }
+
+        ClipboardDiagnosticsLog.Write(
+            $"filejump.perf full_collect_cancel_not_quiet hwnd=0x{dialogHwnd.ToInt64():X} waitedMs={waited}");
+        return false;
+    }
+
+    private static bool IsPrimaryMouseButtonDown()
+        => (Win32.GetAsyncKeyState(0x01) & 0x8000) != 0;
+
+    private static bool IsWindowThreadInMoveSize(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd)) return false;
+        var tid = Win32.GetWindowThreadProcessId(hwnd, out _);
+        if (tid == 0) return false;
+        var gti = new Win32.GUITHREADINFO { cbSize = Marshal.SizeOf<Win32.GUITHREADINFO>() };
+        return Win32.GetGUIThreadInfo(tid, ref gti) && gti.hwndMoveSize != IntPtr.Zero;
     }
 
     private void TryJumpFileDialogRefreshPickerIfOpen(IntPtr dialogHwnd, List<FileJumpCandidate> full)
@@ -4402,6 +4442,7 @@ public partial class PopupWindow : Window
                 _fileJumpLastHotkeyTick = 0;
                 _fileJumpPickerOpenInProgress = true;
                 FileDialogJumpPickerWindow? picker = null;
+                var shown = false;
                 try
                 {
                     picker = new FileDialogJumpPickerWindow(
@@ -4414,21 +4455,48 @@ public partial class PopupWindow : Window
                             _activeFileJumpPicker = null;
                         ClearFileJumpDoubleTapState();
                     };
-                    try
+                    // ShowDialog 会开启嵌套消息循环；跳转窗本身已经通过全局钩子/Closed 维护生命周期，
+                    // 使用 modeless Show 避免主 UI Dispatcher 被模态循环长期占住，减轻拖动和关闭延迟。
+                    picker.Show();
+                    shown = true;
+                    if (afterPickerAssigned != null)
                     {
-                        afterPickerAssigned?.Invoke();
-                    }
-                    catch (Exception ex)
-                    {
-                        ShellNavigateLog.Write("filejump", "afterPickerAssigned: " + ex);
-                    }
+                        var pickerCapture = picker;
+                        DispatcherTimer? fullCollectDelay = null;
+                        fullCollectDelay = new DispatcherTimer
+                        {
+                            Interval = TimeSpan.FromMilliseconds(900)
+                        };
+                        fullCollectDelay.Tick += (_, _) =>
+                        {
+                            fullCollectDelay?.Stop();
+                            fullCollectDelay = null;
+                            if (session != _fileJumpPickerSession) return;
+                            if (!ReferenceEquals(_activeFileJumpPicker, pickerCapture)) return;
+                            if (!pickerCapture.IsLoaded) return;
 
-                    var accepted = picker.ShowDialog() == true;
-                    if (!autoForegroundStickyMode && accepted && !string.IsNullOrEmpty(picker.SelectedPath))
-                        FileDialogJumpHelper.TryNavigateToFolder(dialogForPicker, picker.SelectedPath, allowShellInject);
+                            try
+                            {
+                                afterPickerAssigned.Invoke();
+                            }
+                            catch (Exception ex)
+                            {
+                                ShellNavigateLog.Write("filejump", "afterPickerAssigned delayed: " + ex);
+                            }
+                        };
+                        fullCollectDelay.Start();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ShellNavigateLog.Write("filejump", "show jump picker: " + ex);
+                    if (picker != null && ReferenceEquals(_activeFileJumpPicker, picker))
+                        _activeFileJumpPicker = null;
                 }
                 finally
                 {
+                    if (!shown && picker != null && ReferenceEquals(_activeFileJumpPicker, picker))
+                        _activeFileJumpPicker = null;
                     _fileJumpPickerOpenInProgress = false;
                 }
             }, openPriority);

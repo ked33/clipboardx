@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -27,11 +28,13 @@ public partial class FileDialogJumpPickerWindow : Window
     private static readonly Win32.LowLevelKeyboardProc s_jumpPickerKbThunk = StaticJumpPickerKeyboardHook;
     private static readonly Win32.LowLevelMouseProc s_jumpPickerMouseThunk = StaticJumpPickerMouseHook;
     private static readonly Win32.WinEventDelegate s_jumpPickerWinEventThunk = StaticJumpPickerWinEventProc;
+    private static readonly Win32.WinEventDelegate s_jumpPickerDockWinEventThunk = StaticJumpPickerDockWinEventProc;
     private static IntPtr s_jumpPickerKbHookForNext;
     private static FileDialogJumpPickerWindow? s_jumpPickerKbOwner;
     private static IntPtr s_jumpPickerMouseHookForNext;
     private static FileDialogJumpPickerWindow? s_jumpPickerMouseOwner;
     private static FileDialogJumpPickerWindow? s_jumpPickerWinEventOwner;
+    private static FileDialogJumpPickerWindow? s_jumpPickerDockWinEventOwner;
 
     private readonly IntPtr _fileDialogOwnerHwnd;
     private readonly int _mouseScreenX;
@@ -58,6 +61,28 @@ public partial class FileDialogJumpPickerWindow : Window
     private IntPtr _jumpPickerWinEventHook;
 
     private DispatcherTimer? _dockFollowTimer;
+    private IntPtr _dockOwnerMoveSizeHook;
+    private IntPtr _dockOwnerLocationHook;
+    private bool _dockOwnerMoveActive;
+    private List<FileJumpCandidate>? _deferredExternalRefresh;
+    private string? _deferredExternalPreferredPath;
+    private DispatcherTimer? _deferredExternalRefreshTimer;
+    private int _dockPopupPhysWidth;
+    private int _dockPopupPhysHeight;
+    private int _lastDockOwnerLeft = int.MinValue;
+    private int _lastDockOwnerTop = int.MinValue;
+    private int _lastDockOwnerRight = int.MinValue;
+    private int _lastDockOwnerBottom = int.MinValue;
+    private int _lastDockActualWidth = int.MinValue;
+    private int _lastDockActualHeight = int.MinValue;
+    private int _lastAppliedPhysX = int.MinValue;
+    private int _lastAppliedPhysY = int.MinValue;
+    private DispatcherTimer? _focusRetryTimer;
+    private DispatcherTimer? _searchRefreshTimer;
+    private int _focusRetryCount;
+    private int _perfKeyboardInvokeSlowLogCount;
+    private int _perfDockFollowSlowLogCount;
+    private int _perfFocusSlowLogCount;
 
     private int _pendingPhysX;
     private int _pendingPhysY;
@@ -94,6 +119,15 @@ public partial class FileDialogJumpPickerWindow : Window
     public string? SelectedPath { get; private set; }
     public IntPtr OwnerDialogHwnd => _fileDialogOwnerHwnd;
     public bool IsAutoForegroundStickyMode => _autoForegroundStickyMode;
+
+    private static void PerfLog(string eventName, long elapsedMs, long thresholdMs, string detail = "")
+    {
+        if (elapsedMs < thresholdMs) return;
+        ClipboardDiagnosticsLog.Write(
+            string.IsNullOrEmpty(detail)
+                ? $"filejump.perf {eventName} elapsedMs={elapsedMs}"
+                : $"filejump.perf {eventName} elapsedMs={elapsedMs} {detail}");
+    }
 
     public FileDialogJumpPickerWindow(
         IReadOnlyList<FileJumpCandidate> collectorItems,
@@ -143,6 +177,7 @@ public partial class FileDialogJumpPickerWindow : Window
 
         Closed += FileDialogJumpPickerWindow_Closed;
         Activated += FileDialogJumpPickerWindow_Activated;
+        SizeChanged += FileDialogJumpPickerWindow_SizeChanged;
 
         SourceInitialized += FileDialogJumpPickerWindow_SourceInitialized;
         ContentRendered += FileDialogJumpPickerWindow_ContentRendered;
@@ -156,6 +191,13 @@ public partial class FileDialogJumpPickerWindow : Window
         _everythingQueryCts = null;
         _dockFollowTimer?.Stop();
         _dockFollowTimer = null;
+        _focusRetryTimer?.Stop();
+        _focusRetryTimer = null;
+        _searchRefreshTimer?.Stop();
+        _searchRefreshTimer = null;
+        _deferredExternalRefreshTimer?.Stop();
+        _deferredExternalRefreshTimer = null;
+        UninstallDockOwnerFollowHooks();
         UninstallKeyboardHook();
         UninstallJumpPickerOutsideHooks();
         if (_hwnd != IntPtr.Zero)
@@ -168,6 +210,11 @@ public partial class FileDialogJumpPickerWindow : Window
         }
     }
 
+    private void FileDialogJumpPickerWindow_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateDockPopupPhysicalSizeCache();
+    }
+
     private void FileDialogJumpPickerWindow_Activated(object? sender, EventArgs e)
     {
         if (IsLoaded)
@@ -176,33 +223,68 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void TryStealFocusForPicker()
     {
+        if (_dockOwnerMoveActive || IsPrimaryMouseButtonDown())
+        {
+            ScheduleFocusRetry();
+            return;
+        }
+        _focusRetryTimer?.Stop();
+        _focusRetryTimer = null;
+        _focusRetryCount = 0;
+        var swTotal = Stopwatch.StartNew();
         try
         {
-            Activate();
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd != IntPtr.Zero)
+            var hwnd = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero)
+                return;
+
+            if (Win32.GetForegroundWindow() != hwnd)
             {
-                // 另存为等对话框与跳转窗常跨线程；单纯 SetForegroundWindow 易被系统拒绝；与 PopupWindow 夺前台策略一致。
+                Activate();
                 Win32.SetForegroundWindowAggressive(hwnd);
-                try
+                if (Win32.GetForegroundWindow() != hwnd)
                 {
-                    Win32.SetFocus(hwnd);
-                }
-                catch
-                {
-                    /* ignore */
+                    ScheduleFocusRetry();
+                    return;
                 }
             }
-        }
-        catch { /* ignore */ }
-        try
-        {
+
             ItemsList.Focusable = true;
             _ = ItemsList.Focus();
             Keyboard.Focus(ItemsList);
+            ItemsList.Focus();
         }
         catch { /* ignore */ }
+        finally
+        {
+            swTotal.Stop();
+            if (swTotal.ElapsedMilliseconds >= 25 && _perfFocusSlowLogCount < 20)
+            {
+                _perfFocusSlowLogCount++;
+                ClipboardDiagnosticsLog.Write(
+                    $"filejump.perf focus elapsedMs={swTotal.ElapsedMilliseconds} moveActive={_dockOwnerMoveActive}");
+            }
+        }
     }
+
+    private void ScheduleFocusRetry()
+    {
+        if (_focusRetryCount >= 12) return;
+        _focusRetryTimer?.Stop();
+        _focusRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) };
+        _focusRetryTimer.Tick += (_, _) =>
+        {
+            _focusRetryTimer?.Stop();
+            _focusRetryTimer = null;
+            _focusRetryCount++;
+            if (!IsLoaded) return;
+            TryStealFocusForPicker();
+        };
+        _focusRetryTimer.Start();
+    }
+
+    private static bool IsPrimaryMouseButtonDown()
+        => (Win32.GetAsyncKeyState(0x01) & 0x8000) != 0;
 
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
     {
@@ -277,6 +359,15 @@ public partial class FileDialogJumpPickerWindow : Window
             owner.JumpPickerForegroundCallback(hWinEventHook, eventType, hwnd, idObject, idChild, dwEventThread, dwmsEventTime);
     }
 
+    private static void StaticJumpPickerDockWinEventProc(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        var owner = s_jumpPickerDockWinEventOwner;
+        if (owner != null)
+            owner.JumpPickerDockMoveSizeCallback(eventType, hwnd, idObject, idChild);
+    }
+
     private IntPtr JumpPickerMouseHookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0 && IsLoaded && Opacity > 0)
@@ -303,13 +394,38 @@ public partial class FileDialogJumpPickerWindow : Window
         Dispatcher.BeginInvoke(() => TryDismissJumpPickerFromForegroundChange(hwnd));
     }
 
+    private void JumpPickerDockMoveSizeCallback(uint eventType, IntPtr hwnd, int idObject, int idChild)
+    {
+        if (idObject != Win32.OBJID_WINDOW || idChild != 0) return;
+        if (!DockEventBelongsToOwner(hwnd)) return;
+
+        if (eventType == Win32.EVENT_OBJECT_LOCATIONCHANGE)
+        {
+            TryRealtimeDockFollow();
+            return;
+        }
+
+        if (eventType == Win32.EVENT_SYSTEM_MOVESIZESTART)
+        {
+            _dockOwnerMoveActive = true;
+            return;
+        }
+
+        if (eventType == Win32.EVENT_SYSTEM_MOVESIZEEND)
+        {
+            _dockOwnerMoveActive = false;
+            TryRealtimeDockFollow(force: true);
+            FlushDeferredExternalRefresh();
+        }
+    }
+
     private void TryDismissJumpPickerFromOutsideMouse()
     {
         if (!IsLoaded || Opacity <= 0) return;
         if (_clickReceivedByJumpPicker) return;
         if (JumpRowContextMenu.IsOpen) return;
         if (_suppressDismissForSubDialog) return;
-        // 勿设 DialogResult：钩子可能在 ShowDialog 完成对话框初始化之前触发，会抛 InvalidOperationException
+        // 跳转窗是 modeless 窗口，关闭只负责收起 UI，导航由 CommitNavigateKeepOpen 独立完成。
         Close();
     }
 
@@ -353,6 +469,8 @@ public partial class FileDialogJumpPickerWindow : Window
             return Win32.CallNextHookEx(_jumpKeyboardHook, nCode, wParam, lParam);
         if (_suppressJumpHook)
             return Win32.CallNextHookEx(_jumpKeyboardHook, nCode, wParam, lParam);
+        if (!KeyboardHookShouldObserveForeground())
+            return Win32.CallNextHookEx(_jumpKeyboardHook, nCode, wParam, lParam);
         if (KeyboardFocusIsExternalEditable())
             return Win32.CallNextHookEx(_jumpKeyboardHook, nCode, wParam, lParam);
 
@@ -361,7 +479,15 @@ public partial class FileDialogJumpPickerWindow : Window
         bool handled = false;
         try
         {
+            var swInvoke = Stopwatch.StartNew();
             Dispatcher.Invoke(() => { handled = ApplyKeyDown(kb.vkCode, kb.scanCode); });
+            swInvoke.Stop();
+            if (swInvoke.ElapsedMilliseconds >= 16 && _perfKeyboardInvokeSlowLogCount < 30)
+            {
+                _perfKeyboardInvokeSlowLogCount++;
+                ClipboardDiagnosticsLog.Write(
+                    $"filejump.perf keyboard_dispatcher_invoke elapsedMs={swInvoke.ElapsedMilliseconds} vk={kb.vkCode}");
+            }
         }
         catch
         {
@@ -371,6 +497,27 @@ public partial class FileDialogJumpPickerWindow : Window
         return handled
             ? (IntPtr)1
             : Win32.CallNextHookEx(_jumpKeyboardHook, nCode, wParam, lParam);
+    }
+
+    private bool KeyboardHookShouldObserveForeground()
+    {
+        if (_hwnd == IntPtr.Zero) return false;
+
+        var fg = Win32.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        if (fg == _hwnd) return true;
+
+        var ownerRoot = _fileDialogOwnerHwnd != IntPtr.Zero && Win32.IsWindow(_fileDialogOwnerHwnd)
+            ? Win32.GetAncestor(_fileDialogOwnerHwnd, Win32.GA_ROOT)
+            : IntPtr.Zero;
+        if (ownerRoot == IntPtr.Zero) return false;
+
+        var fgDialog = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(fg);
+        var fgRoot = fgDialog != IntPtr.Zero
+            ? Win32.GetAncestor(fgDialog, Win32.GA_ROOT)
+            : Win32.GetAncestor(fg, Win32.GA_ROOT);
+
+        return fgRoot != IntPtr.Zero && fgRoot == ownerRoot;
     }
 
     /// <summary>
@@ -452,18 +599,23 @@ public partial class FileDialogJumpPickerWindow : Window
         switch (vk)
         {
             case Win32.VK_UP:
+                FlushPendingSearchRefresh();
                 MoveSelection(-1);
                 return true;
             case Win32.VK_DOWN:
+                FlushPendingSearchRefresh();
                 MoveSelection(1);
                 return true;
             case Win32.VK_LEFT:
+                FlushPendingSearchRefresh();
                 ScrollPage(-1);
                 return true;
             case Win32.VK_RIGHT:
+                FlushPendingSearchRefresh();
                 ScrollPage(1);
                 return true;
             case Win32.VK_RETURN:
+                FlushPendingSearchRefresh();
                 if (ItemsList.SelectedItem is FileJumpPickerRow r)
                     CommitSelection(r.Path);
                 return true;
@@ -471,11 +623,10 @@ public partial class FileDialogJumpPickerWindow : Window
                 if (_searchText.Length > 0)
                 {
                     _searchText = "";
-                    RefreshFilter();
+                    ScheduleSearchRefresh();
                 }
                 else
                 {
-                    DialogResult = false;
                     Close();
                 }
                 return true;
@@ -483,7 +634,7 @@ public partial class FileDialogJumpPickerWindow : Window
                 if (_searchText.Length > 0)
                 {
                     _searchText = _searchText[..^1];
-                    RefreshFilter();
+                    ScheduleSearchRefresh();
                 }
                 return true;
             case 0x09:
@@ -495,11 +646,36 @@ public partial class FileDialogJumpPickerWindow : Window
         if (ch.HasValue && !char.IsControl(ch.Value))
         {
             _searchText += ch.Value;
-            RefreshFilter();
+            ScheduleSearchRefresh();
             return true;
         }
 
         return false;
+    }
+
+    private void ScheduleSearchRefresh()
+    {
+        _searchRefreshTimer?.Stop();
+        _searchRefreshTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(30)
+        };
+        _searchRefreshTimer.Tick += (_, _) =>
+        {
+            _searchRefreshTimer?.Stop();
+            _searchRefreshTimer = null;
+            if (!IsLoaded) return;
+            RefreshFilter();
+        };
+        _searchRefreshTimer.Start();
+    }
+
+    private void FlushPendingSearchRefresh()
+    {
+        if (_searchRefreshTimer == null) return;
+        _searchRefreshTimer.Stop();
+        _searchRefreshTimer = null;
+        RefreshFilter();
     }
 
     private static char? VkToChar(uint vkCode, uint scanCode)
@@ -517,6 +693,9 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void BuildMasterList()
     {
+        var sw = Stopwatch.StartNew();
+        var favCount = _settings.FolderFavorites.Count;
+        var snapshotCount = _collectorSnapshot.Count;
         _masterRows.Clear();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -545,10 +724,15 @@ public partial class FileDialogJumpPickerWindow : Window
             seen.Add(c.Path);
             _masterRows.Add(new FileJumpPickerRow(c.Label, c.Path, false));
         }
+
+        sw.Stop();
+        PerfLog("build_master_list", sw.ElapsedMilliseconds, 25,
+            $"fav={favCount} snapshot={snapshotCount} rows={_masterRows.Count}");
     }
 
-    private void RefreshFilter(int? preferListIndex = null, string? preferPath = null)
+    private void RefreshFilter(int? preferListIndex = null, string? preferPath = null, bool scrollSelection = true)
     {
+        var sw = Stopwatch.StartNew();
         var keepPath = preferPath ?? (ItemsList.SelectedItem as FileJumpPickerRow)?.Path;
         _displayRows.Clear();
         _firstVisibleIndex = 0;
@@ -615,11 +799,16 @@ public partial class FileDialogJumpPickerWindow : Window
                 sel = Math.Clamp(preferListIndex.Value, 0, _displayRows.Count - 1);
 
             ItemsList.SelectedIndex = sel;
-            ItemsList.ScrollIntoView(ItemsList.SelectedItem);
+            if (scrollSelection)
+                ItemsList.ScrollIntoView(ItemsList.SelectedItem);
         }
 
         if (!string.IsNullOrEmpty(query) && _settings.FileJumpPickerEverythingFolderSearch)
             ScheduleEverythingFolderQuery(query);
+
+        sw.Stop();
+        PerfLog("refresh_filter", sw.ElapsedMilliseconds, 25,
+            $"queryLen={query.Length} master={_masterRows.Count} display={_displayRows.Count}");
     }
 
     private void ScheduleEverythingFolderQuery(string queryForSchedule)
@@ -818,14 +1007,28 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         if (_snappedPhysicalOnce) return;
         _snappedPhysicalOnce = true;
+        var swTotal = Stopwatch.StartNew();
 
         try
         {
+            var sw = Stopwatch.StartNew();
             UpdateLayout();
+            PerfLog("content_rendered_update_layout", sw.ElapsedMilliseconds, 16);
+            sw.Restart();
+            UpdateDockPopupPhysicalSizeCache();
+            PerfLog("content_rendered_size_cache", sw.ElapsedMilliseconds, 8);
+            sw.Restart();
             ComputePhysicalPosition(useActualSize: true);
+            PerfLog("content_rendered_compute_position", sw.ElapsedMilliseconds, 8);
+            sw.Restart();
             // 首次布局完成：允许 SetWindowPos 顺带激活，避免 SWP_NOACTIVATE 与「Owned 子窗」叠加导致永远无法抢前台。
             ApplyPendingPhysicalSetWindowPos(noActivate: false);
+            PerfLog("content_rendered_set_window_pos", sw.ElapsedMilliseconds, 8);
+            _lastAppliedPhysX = _pendingPhysX;
+            _lastAppliedPhysY = _pendingPhysY;
+            sw.Restart();
             ApplyPendingPhysicalAsWpfLeftTop();
+            PerfLog("content_rendered_apply_wpf_left_top", sw.ElapsedMilliseconds, 8);
         }
         catch { /* ignore */ }
         finally
@@ -838,31 +1041,224 @@ public partial class FileDialogJumpPickerWindow : Window
             InstallJumpPickerOutsideHooks();
         if (_dockBesideDialog)
         {
-            _dockFollowTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            InstallDockOwnerFollowHooks();
+            // WinEvent 提供实时跟随；timer 只兜底处理个别宿主不发 LOCATIONCHANGE 的场景。
+            _dockFollowTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _dockFollowTimer.Tick += (_, _) => DockFollowTick();
             _dockFollowTimer.Start();
         }
-        // 弹出后聚焦列表，字母键才能进 everything 筛选；焦点回到文件对话框编辑框时仍由 KeyboardFocusIsExternalEditable 把按键让给对话框。
-        Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.Input);
-        Dispatcher.BeginInvoke(TryStealFocusForPicker, DispatcherPriority.ApplicationIdle);
+        // 弹出后稍后再抢焦点，避免刚开窗立即拖动文件对话框时与系统拖动循环抢前台。
+        ScheduleInitialFocusSteal();
+        swTotal.Stop();
+        PerfLog("content_rendered_total", swTotal.ElapsedMilliseconds, 30,
+            $"dock={_dockBesideDialog} sticky={_autoForegroundStickyMode}");
     }
 
-    private void DockFollowTick()
+    private void ScheduleInitialFocusSteal()
     {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!IsLoaded || _dockOwnerMoveActive) return;
+            TryStealFocusForPicker();
+        };
+        timer.Start();
+    }
+
+    private void DockFollowTick(bool force = false)
+    {
+        var sw = Stopwatch.StartNew();
         if (!_dockBesideDialog || _hwnd == IntPtr.Zero) return;
-        if (!Win32.IsWindow(_fileDialogOwnerHwnd))
+        if (!TryReadDockOwnerRect(out var ownerRect))
         {
             Close();
             return;
         }
+
+        UpdateDockPopupPhysicalSizeCache();
+        var actualWidth = _dockPopupPhysWidth;
+        var actualHeight = _dockPopupPhysHeight;
+        if (!force
+            && ownerRect.Left == _lastDockOwnerLeft
+            && ownerRect.Top == _lastDockOwnerTop
+            && ownerRect.Right == _lastDockOwnerRight
+            && ownerRect.Bottom == _lastDockOwnerBottom
+            && actualWidth == _lastDockActualWidth
+            && actualHeight == _lastDockActualHeight)
+            return;
+
         try
         {
-            UpdateLayout();
-            ComputePhysicalPosition(useActualSize: true);
-            ApplyPendingPhysicalSetWindowPos();
-            ApplyPendingPhysicalAsWpfLeftTop();
+            TryRealtimeDockFollow(force);
+            RememberDockSnapshot(ownerRect, actualWidth, actualHeight);
         }
         catch { /* ignore */ }
+        finally
+        {
+            sw.Stop();
+            if (sw.ElapsedMilliseconds >= 8 && _perfDockFollowSlowLogCount < 60)
+            {
+                _perfDockFollowSlowLogCount++;
+                ClipboardDiagnosticsLog.Write(
+                    $"filejump.perf dock_follow_tick elapsedMs={sw.ElapsedMilliseconds} force={force}");
+            }
+        }
+    }
+
+    private void TryRealtimeDockFollow(bool force = false)
+    {
+        var sw = Stopwatch.StartNew();
+        var hwnd = _hwnd;
+        if (!_dockBesideDialog || hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd)) return;
+        if (!TryReadDockOwnerRect(out var ownerRect)) return;
+
+        var popupW = _dockPopupPhysWidth;
+        var popupH = _dockPopupPhysHeight;
+        if (popupW <= 0 || popupH <= 0) return;
+        if (!FileJumpPickerDockPlacement.TryComputePosition(ownerRect, popupW, popupH, out var x, out var y))
+            return;
+
+        if (!force && x == _lastAppliedPhysX && y == _lastAppliedPhysY)
+            return;
+
+        _isOurSetWindowPosForPicker = true;
+        try
+        {
+            Win32.SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0,
+                Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE | Win32.SWP_NOSENDCHANGING);
+            _pendingPhysX = x;
+            _pendingPhysY = y;
+            _lastAppliedPhysX = x;
+            _lastAppliedPhysY = y;
+            RememberDockSnapshot(ownerRect, popupW, popupH);
+        }
+        finally
+        {
+            _isOurSetWindowPosForPicker = false;
+            sw.Stop();
+            if (sw.ElapsedMilliseconds >= 8 && _perfDockFollowSlowLogCount < 60)
+            {
+                _perfDockFollowSlowLogCount++;
+                ClipboardDiagnosticsLog.Write(
+                    $"filejump.perf realtime_dock_follow elapsedMs={sw.ElapsedMilliseconds} force={force} x={x} y={y}");
+            }
+        }
+    }
+
+    private void UpdateDockPopupPhysicalSizeCache()
+    {
+        if (!_dockBesideDialog) return;
+
+        try
+        {
+            var wpfW = ActualWidth > 1 ? ActualWidth : Width;
+            var wpfH = ActualHeight > 1 ? ActualHeight : MaxHeight > 1 && MaxHeight < 900 ? MaxHeight : Height;
+            var dpiPoint = new Win32.POINT { X = _mouseScreenX, Y = _mouseScreenY };
+            if (TryReadDockOwnerRect(out var ownerRect))
+            {
+                dpiPoint.X = (ownerRect.Left + ownerRect.Right) / 2;
+                dpiPoint.Y = (ownerRect.Top + ownerRect.Bottom) / 2;
+            }
+
+            var hMon = Win32.MonitorFromPoint(dpiPoint, Win32.MONITOR_DEFAULTTONEAREST);
+            Win32.GetDpiForMonitor(hMon, 0, out uint monDpiX, out uint monDpiY);
+            _dockPopupPhysWidth = Math.Max(1, (int)Math.Ceiling(wpfW * (monDpiX / 96.0)));
+            _dockPopupPhysHeight = Math.Max(1, (int)Math.Ceiling(wpfH * (monDpiY / 96.0)));
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private bool TryReadDockOwnerRect(out Win32.RECT ownerRect)
+    {
+        ownerRect = default;
+        return _fileDialogOwnerHwnd != IntPtr.Zero
+               && Win32.IsWindow(_fileDialogOwnerHwnd)
+               && Win32.IsWindowVisible(_fileDialogOwnerHwnd)
+               && Win32.GetWindowRect(_fileDialogOwnerHwnd, out ownerRect);
+    }
+
+    private void RememberDockSnapshot(Win32.RECT ownerRect, int actualWidth, int actualHeight)
+    {
+        _lastDockOwnerLeft = ownerRect.Left;
+        _lastDockOwnerTop = ownerRect.Top;
+        _lastDockOwnerRight = ownerRect.Right;
+        _lastDockOwnerBottom = ownerRect.Bottom;
+        _lastDockActualWidth = actualWidth;
+        _lastDockActualHeight = actualHeight;
+    }
+
+    private void ResetDockSnapshot()
+    {
+        _lastDockOwnerLeft = int.MinValue;
+        _lastDockOwnerTop = int.MinValue;
+        _lastDockOwnerRight = int.MinValue;
+        _lastDockOwnerBottom = int.MinValue;
+        _lastDockActualWidth = int.MinValue;
+        _lastDockActualHeight = int.MinValue;
+    }
+
+    private void InstallDockOwnerFollowHooks()
+    {
+        s_jumpPickerDockWinEventOwner = this;
+
+        if (_dockOwnerMoveSizeHook == IntPtr.Zero)
+        {
+            _dockOwnerMoveSizeHook = Win32.SetWinEventHook(
+                Win32.EVENT_SYSTEM_MOVESIZESTART,
+                Win32.EVENT_SYSTEM_MOVESIZEEND,
+                IntPtr.Zero,
+                s_jumpPickerDockWinEventThunk,
+                0,
+                0,
+                Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+        }
+
+        if (_dockOwnerLocationHook == IntPtr.Zero)
+        {
+            _dockOwnerLocationHook = Win32.SetWinEventHook(
+                Win32.EVENT_OBJECT_LOCATIONCHANGE,
+                Win32.EVENT_OBJECT_LOCATIONCHANGE,
+                IntPtr.Zero,
+                s_jumpPickerDockWinEventThunk,
+                0,
+                0,
+                Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+        }
+    }
+
+    private void UninstallDockOwnerFollowHooks()
+    {
+        if (_dockOwnerMoveSizeHook != IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_dockOwnerMoveSizeHook);
+            _dockOwnerMoveSizeHook = IntPtr.Zero;
+        }
+
+        if (_dockOwnerLocationHook != IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_dockOwnerLocationHook);
+            _dockOwnerLocationHook = IntPtr.Zero;
+        }
+
+        if (s_jumpPickerDockWinEventOwner == this)
+            s_jumpPickerDockWinEventOwner = null;
+    }
+
+    private bool DockEventBelongsToOwner(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || _fileDialogOwnerHwnd == IntPtr.Zero) return false;
+        if (!Win32.IsWindow(_fileDialogOwnerHwnd)) return false;
+
+        var ownerRoot = Win32.GetAncestor(_fileDialogOwnerHwnd, Win32.GA_ROOT);
+        if (ownerRoot == IntPtr.Zero) return false;
+
+        var eventRoot = Win32.GetAncestor(hwnd, Win32.GA_ROOT);
+        if (eventRoot == IntPtr.Zero || eventRoot != ownerRoot) return false;
+        return hwnd == ownerRoot || hwnd == _fileDialogOwnerHwnd;
     }
 
     private void ComputePhysicalPosition(bool useActualSize)
@@ -1208,10 +1604,97 @@ public partial class FileDialogJumpPickerWindow : Window
     /// </summary>
     public void RefreshCandidatesFromExternal(IReadOnlyList<FileJumpCandidate> fresh, string? preferredPath = null)
     {
+        var freshList = fresh as List<FileJumpCandidate> ?? fresh.ToList();
+        if (string.IsNullOrEmpty(preferredPath) && CandidateListsEquivalent(_collectorSnapshot, freshList))
+        {
+            ClipboardDiagnosticsLog.Write(
+                $"filejump.perf skip_external_refresh_same fresh={freshList.Count} moveActive={_dockOwnerMoveActive}");
+            return;
+        }
+
+        _deferredExternalRefresh = freshList;
+        _deferredExternalPreferredPath = preferredPath;
+        var delayMs = _dockOwnerMoveActive ? 220 : 90;
+        ClipboardDiagnosticsLog.Write(
+            $"filejump.perf defer_external_refresh moveActive={_dockOwnerMoveActive} delayMs={delayMs} fresh={freshList.Count} preferred={(string.IsNullOrEmpty(preferredPath) ? 0 : 1)}");
+        ScheduleDeferredExternalRefresh(delayMs);
+    }
+
+    private void ApplyExternalRefreshNow(List<FileJumpCandidate> fresh, string? preferredPath)
+    {
+        if (string.IsNullOrEmpty(preferredPath) && CandidateListsEquivalent(_collectorSnapshot, fresh))
+        {
+            ClipboardDiagnosticsLog.Write(
+                $"filejump.perf skip_external_refresh_same fresh={fresh.Count} moveActive={_dockOwnerMoveActive}");
+            return;
+        }
+        var sw = Stopwatch.StartNew();
         var selectedPath = preferredPath;
         if (string.IsNullOrEmpty(selectedPath) && ItemsList.SelectedItem is FileJumpPickerRow row)
             selectedPath = row.Path;
-        ApplyNavigateKeepOpenListRefresh(selectedPath ?? "", fresh.ToList());
+        ApplyNavigateKeepOpenListRefresh(selectedPath ?? "", fresh);
+        sw.Stop();
+        PerfLog("refresh_candidates_external", sw.ElapsedMilliseconds, 25,
+            $"fresh={fresh.Count} preferred={(string.IsNullOrEmpty(preferredPath) ? 0 : 1)}");
+    }
+
+    private void FlushDeferredExternalRefresh()
+    {
+        if (_deferredExternalRefresh == null) return;
+        ScheduleDeferredExternalRefresh(220);
+    }
+
+    private void ScheduleDeferredExternalRefresh(int delayMs)
+    {
+        _deferredExternalRefreshTimer?.Stop();
+        _deferredExternalRefreshTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(delayMs)
+        };
+        _deferredExternalRefreshTimer.Tick += (_, _) =>
+        {
+            _deferredExternalRefreshTimer?.Stop();
+            _deferredExternalRefreshTimer = null;
+            if (!IsLoaded) return;
+            if (_dockOwnerMoveActive)
+            {
+                ScheduleDeferredExternalRefresh(220);
+                return;
+            }
+            if (_deferredExternalRefresh == null) return;
+
+            var fresh = _deferredExternalRefresh;
+            var preferredPath = _deferredExternalPreferredPath;
+            _deferredExternalRefresh = null;
+            _deferredExternalPreferredPath = null;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!IsLoaded || _dockOwnerMoveActive)
+                {
+                    _deferredExternalRefresh = fresh;
+                    _deferredExternalPreferredPath = preferredPath;
+                    ScheduleDeferredExternalRefresh(220);
+                    return;
+                }
+
+                ApplyExternalRefreshNow(fresh, preferredPath);
+            }, DispatcherPriority.ContextIdle);
+        };
+        _deferredExternalRefreshTimer.Start();
+    }
+
+    private static bool CandidateListsEquivalent(IReadOnlyList<FileJumpCandidate> current, IReadOnlyList<FileJumpCandidate> fresh)
+    {
+        if (current.Count != fresh.Count) return false;
+        for (int i = 0; i < current.Count; i++)
+        {
+            if (!string.Equals(current[i].Path, fresh[i].Path, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!string.Equals(current[i].Label, fresh[i].Label, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1228,7 +1711,6 @@ public partial class FileDialogJumpPickerWindow : Window
     private void CommitAndClose(string path)
     {
         SelectedPath = path;
-        DialogResult = true;
         Close();
     }
 
@@ -1324,34 +1806,43 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void ApplyNavigateKeepOpenListRefresh(string committedPath, List<FileJumpCandidate> fresh)
     {
+        var swTotal = Stopwatch.StartNew();
         _collectorSnapshot.Clear();
         _collectorSnapshot.AddRange(fresh);
 
         BuildMasterList();
-        RefreshFilter();
+        RefreshFilter(scrollSelection: false);
         var i = _displayRows.ToList().FindIndex(r =>
             string.Equals(r.Path, committedPath, StringComparison.OrdinalIgnoreCase));
         if (i >= 0)
         {
             ItemsList.SelectedIndex = i;
-            ItemsList.ScrollIntoView(ItemsList.SelectedItem);
+            if (_displayRows.Count > PageSize)
+                ItemsList.ScrollIntoView(ItemsList.SelectedItem);
         }
         else if (_displayRows.Count > 0)
         {
             ItemsList.SelectedIndex = 0;
-            ItemsList.ScrollIntoView(ItemsList.SelectedItem);
+            if (_displayRows.Count > PageSize)
+                ItemsList.ScrollIntoView(ItemsList.SelectedItem);
         }
 
         if (_dockBesideDialog && _hwnd != IntPtr.Zero)
         {
-            try
+            Dispatcher.BeginInvoke(() =>
             {
-                UpdateLayout();
-                ComputePhysicalPosition(useActualSize: true);
-                ApplyPendingPhysicalSetWindowPos();
-                ApplyPendingPhysicalAsWpfLeftTop();
-            }
-            catch { /* ignore */ }
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    UpdateDockPopupPhysicalSizeCache();
+                    TryRealtimeDockFollow(force: true);
+                    PerfLog("navigate_refresh_realign", sw.ElapsedMilliseconds, 8);
+                }
+                catch { /* ignore */ }
+            }, DispatcherPriority.Background);
         }
+        swTotal.Stop();
+        PerfLog("navigate_refresh_total", swTotal.ElapsedMilliseconds, 35,
+            $"fresh={fresh.Count} display={_displayRows.Count}");
     }
 }

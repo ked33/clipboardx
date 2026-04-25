@@ -11,6 +11,14 @@ internal static class FileJumpPickerDockPlacement
         if (dialogHwnd == 0 || !Win32.GetWindowRect(dialogHwnd, out var dr))
             return false;
 
+        return TryComputePosition(dr, popupW, popupH, out x, out y);
+    }
+
+    public static bool TryComputePosition(Win32.RECT dialogRect, int popupW, int popupH, out int x, out int y)
+    {
+        x = y = 0;
+        var dr = dialogRect;
+
         var center = new Win32.POINT { X = (dr.Left + dr.Right) / 2, Y = (dr.Top + dr.Bottom) / 2 };
         var mon = Win32.MonitorFromPoint(center, Win32.MONITOR_DEFAULTTONEAREST);
         var mi = new Win32.MONITORINFO { cbSize = Marshal.SizeOf<Win32.MONITORINFO>() };

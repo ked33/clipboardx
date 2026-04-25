@@ -363,8 +363,12 @@ internal static class Win32
     public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A;
+    public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
     /// <summary>键盘焦点变化；部分宿主打开模态对话框时不一定再发 <see cref="EVENT_SYSTEM_FOREGROUND"/>。</summary>
     public const uint EVENT_OBJECT_FOCUS = 0x8005;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const int OBJID_WINDOW = 0;
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 

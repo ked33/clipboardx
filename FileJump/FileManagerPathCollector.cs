@@ -21,6 +21,8 @@ internal static class FileManagerPathCollector
     private const int TcmCopySrcPathToClip = 2029;
     private const int TcmCopyTrgPathToClip = 2030;
     private const nint XyCopyDataId = 0x400001;
+    private const int ShellExplorerEntriesCacheMs = 15000;
+    private const int ShellExplorerEntriesQuickStaleCacheMs = 60000;
 
     /// <summary>其它白名单管理器：单路径、控节点数以降低 UIA 开销。</summary>
     private const int AlternateUiMaxNodesSingle = 400;
@@ -34,6 +36,11 @@ internal static class FileManagerPathCollector
     private static readonly Condition s_editOrComboCondition = new OrCondition(
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox));
+
+    private static readonly object s_shellExplorerEntriesCacheLock = new();
+    private static readonly object s_shellExplorerEntriesEnumerateLock = new();
+    private static List<ShellExplorerWindowEntry>? s_shellExplorerEntriesCache;
+    private static long s_shellExplorerEntriesCacheTick;
 
     /// <summary>对 THESE 进程在类名未识别时走 UIA 弱匹配（exe 主名无扩展、不区分大小写）。</summary>
     private static readonly HashSet<string> AlternateUiPathProcesses = new(StringComparer.OrdinalIgnoreCase)
@@ -98,19 +105,66 @@ internal static class FileManagerPathCollector
         bool skipAlternateUiAutomation = false, int stopAfterCandidateCount = 0, Func<bool>? shouldAbort = null,
         IReadOnlyList<string>? recentFolders = null)
     {
+        var swTotal = Stopwatch.StartNew();
+        var swStage = Stopwatch.StartNew();
+        var slowStages = new List<string>();
+        var addedCount = 0;
+        var directoryCheckCount = 0;
+        long directoryCheckMs = 0;
+        var scannedTopLevel = 0;
+        var explorerWindowCount = 0;
+        var explorerResolveCount = 0;
+        long shellEnumMs = 0;
+        var shellEnumCacheHit = false;
+        long explorerResolveMs = 0;
+        long alternateUiMs = 0;
+        var alternateUiCount = 0;
+        var aborted = false;
+        var topCap = -1;
         var exeByPid = new Dictionary<uint, string>();
         var list = new List<FileJumpCandidate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void RecordSlowStage(string name, long elapsedMs, long thresholdMs, string detail = "")
+        {
+            if (elapsedMs < thresholdMs) return;
+            slowStages.Add(string.IsNullOrEmpty(detail)
+                ? $"{name}={elapsedMs}ms"
+                : $"{name}={elapsedMs}ms({detail})");
+        }
+
+        void LogSummary(string exitReason)
+        {
+            swTotal.Stop();
+            if (swTotal.ElapsedMilliseconds < 80 && slowStages.Count == 0) return;
+            ClipboardDiagnosticsLog.Write(
+                "filejump.perf collect_candidates " +
+                $"elapsedMs={swTotal.ElapsedMilliseconds} exit={exitReason} hwnd=0x{dialogHwnd.ToInt64():X} " +
+                $"count={list.Count} added={addedCount} scanned={scannedTopLevel} " +
+                $"topCap={topCap} " +
+                $"skipAlt={skipAlternateUiAutomation} stopAfter={stopAfterCandidateCount} " +
+                $"explorerWindows={explorerWindowCount} explorerResolve={explorerResolveCount} " +
+                $"shellEnumMs={shellEnumMs} shellCache={shellEnumCacheHit} explorerResolveMs={explorerResolveMs} " +
+                $"dirChecks={directoryCheckCount} dirMs={directoryCheckMs} altCount={alternateUiCount} altMs={alternateUiMs} " +
+                $"aborted={aborted} slow=[{string.Join("; ", slowStages)}]");
+        }
 
         void Add(string label, string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
             try
             {
-                if (!Directory.Exists(path)) return;
+                var swDir = Stopwatch.StartNew();
+                directoryCheckCount++;
+                var exists = Directory.Exists(path);
+                swDir.Stop();
+                directoryCheckMs += swDir.ElapsedMilliseconds;
+                RecordSlowStage("directory_exists", swDir.ElapsedMilliseconds, 25, label);
+                if (!exists) return;
                 var n = Path.GetFullPath(path);
                 if (!seen.Add(n)) return;
                 list.Add(new FileJumpCandidate(label, n));
+                addedCount++;
             }
             catch { /* ignore */ }
         }
@@ -136,19 +190,25 @@ internal static class FileManagerPathCollector
                 Add("常用路径1", memoryFolder.Trim());
         }
 
+        swStage.Restart();
         if (TryGetZOrderLinkedFolder(dialogHwnd, zDelta) is { } zHint)
             Add("Z 序推测", zHint);
+        RecordSlowStage("zorder_hint", swStage.ElapsedMilliseconds, 25);
 
         if (stopAfterCandidateCount > 0 && list.Count >= stopAfterCandidateCount)
         {
             AppendFavoriteFolders();
+            LogSummary("stop_after_zorder");
             return list;
         }
 
+        swStage.Restart();
         var topLevel = GetTopLevelZOrderTopFirst();
+        RecordSlowStage("top_level_enum", swStage.ElapsedMilliseconds, 25, $"count={topLevel.Count}");
         var scanCap = topLevel.Count;
         if (stopAfterCandidateCount > 0)
             scanCap = Math.Min(scanCap, 72);
+        topCap = scanCap;
 
         List<ShellExplorerWindowEntry>? shellExplorerEntries = null;
 
@@ -156,8 +216,12 @@ internal static class FileManagerPathCollector
         for (var wi = 0; wi < scanCap; wi++)
         {
             if (shouldAbort?.Invoke() == true)
+            {
+                aborted = true;
                 break;
+            }
 
+            scannedTopLevel++;
             var h = topLevel[wi];
             var cls = Win32.GetWindowClassName(h);
             switch (cls)
@@ -182,10 +246,30 @@ internal static class FileManagerPathCollector
                 case "CabinetWClass":
                 case "ExploreWClass":
                 {
-                    shellExplorerEntries ??= TryEnumerateShellExplorerWindows();
+                    if (shellExplorerEntries == null)
+                    {
+                        swStage.Restart();
+                        shellExplorerEntries = TryEnumerateShellExplorerWindows(
+                            out var cacheHit,
+                            allowBlockingRefresh: true,
+                            allowStaleCache: stopAfterCandidateCount > 0);
+                        shellEnumMs += swStage.ElapsedMilliseconds;
+                        shellEnumCacheHit = cacheHit;
+                        explorerWindowCount = shellExplorerEntries.Count;
+                        RecordSlowStage(
+                            cacheHit ? "shell_windows_enum_cache" : "shell_windows_enum",
+                            swStage.ElapsedMilliseconds,
+                            cacheHit ? 8 : 40,
+                            $"count={shellExplorerEntries.Count}");
+                    }
 
+                    swStage.Restart();
+                    explorerResolveCount++;
                     if (TryGetExplorerPathForHwnd(h, shellExplorerEntries) is { } ex)
                         Add("资源管理器", ex);
+                    explorerResolveMs += swStage.ElapsedMilliseconds;
+                    RecordSlowStage("explorer_resolve", swStage.ElapsedMilliseconds, 50,
+                        $"hwnd=0x{h.ToInt64():X}");
                     break;
                 }
                 default:
@@ -197,11 +281,24 @@ internal static class FileManagerPathCollector
                         var altLabel = AlternateManagerDisplayLabel(altProc, altExe);
                         if (altProc.StartsWith("q-dir", StringComparison.OrdinalIgnoreCase))
                         {
+                            swStage.Restart();
+                            alternateUiCount++;
                             foreach (var p in CollectQDirFolderPathsFromAutomation(h))
                                 Add(altLabel, p);
+                            alternateUiMs += swStage.ElapsedMilliseconds;
+                            RecordSlowStage("alternate_qdir_uia", swStage.ElapsedMilliseconds, 60,
+                                $"proc={altProc}");
                         }
-                        else if (TryFindBestFolderPathInAutomationTree(h, out var alt))
-                            Add(altLabel, alt);
+                        else
+                        {
+                            swStage.Restart();
+                            alternateUiCount++;
+                            if (TryFindBestFolderPathInAutomationTree(h, out var alt))
+                                Add(altLabel, alt);
+                            alternateUiMs += swStage.ElapsedMilliseconds;
+                            RecordSlowStage("alternate_uia", swStage.ElapsedMilliseconds, 60,
+                                $"proc={altProc}");
+                        }
                     }
                     break;
             }
@@ -210,8 +307,12 @@ internal static class FileManagerPathCollector
                 break;
         }
 
+        swStage.Restart();
         AppendFavoriteFolders();
+        RecordSlowStage("append_favorites", swStage.ElapsedMilliseconds, 25,
+            $"recent={(recentFolders?.Count ?? 0)}");
 
+        LogSummary("complete");
         return list;
     }
 
@@ -549,6 +650,68 @@ internal static class FileManagerPathCollector
     }
 
     private static List<ShellExplorerWindowEntry> TryEnumerateShellExplorerWindows()
+        => TryEnumerateShellExplorerWindows(out _, allowBlockingRefresh: true, allowStaleCache: false);
+
+    private static List<ShellExplorerWindowEntry> TryEnumerateShellExplorerWindows(
+        out bool cacheHit,
+        bool allowBlockingRefresh,
+        bool allowStaleCache)
+    {
+        cacheHit = false;
+        if (TryGetShellExplorerEntriesCache(ShellExplorerEntriesCacheMs, out var cached))
+        {
+            cacheHit = true;
+            return cached;
+        }
+
+        if (allowStaleCache
+            && TryGetShellExplorerEntriesCache(ShellExplorerEntriesQuickStaleCacheMs, out cached))
+        {
+            cacheHit = true;
+            return cached;
+        }
+
+        if (!allowBlockingRefresh)
+            return new List<ShellExplorerWindowEntry>();
+
+        lock (s_shellExplorerEntriesEnumerateLock)
+        {
+            if (TryGetShellExplorerEntriesCache(ShellExplorerEntriesCacheMs, out cached)
+                || (allowStaleCache
+                    && TryGetShellExplorerEntriesCache(ShellExplorerEntriesQuickStaleCacheMs, out cached)))
+            {
+                cacheHit = true;
+                return cached;
+            }
+
+            var fresh = TryEnumerateShellExplorerWindowsUncached();
+            lock (s_shellExplorerEntriesCacheLock)
+            {
+                s_shellExplorerEntriesCache = fresh;
+                s_shellExplorerEntriesCacheTick = Environment.TickCount64;
+            }
+
+            return new List<ShellExplorerWindowEntry>(fresh);
+        }
+    }
+
+    private static bool TryGetShellExplorerEntriesCache(int maxAgeMs, out List<ShellExplorerWindowEntry> entries)
+    {
+        entries = new List<ShellExplorerWindowEntry>();
+        var now = Environment.TickCount64;
+        lock (s_shellExplorerEntriesCacheLock)
+        {
+            if (s_shellExplorerEntriesCache == null
+                || now - s_shellExplorerEntriesCacheTick < 0
+                || now - s_shellExplorerEntriesCacheTick > maxAgeMs)
+                return false;
+
+            entries = new List<ShellExplorerWindowEntry>(s_shellExplorerEntriesCache);
+            return true;
+        }
+    }
+
+    private static List<ShellExplorerWindowEntry> TryEnumerateShellExplorerWindowsUncached()
     {
         var r = new List<ShellExplorerWindowEntry>();
         Type? t = Type.GetTypeFromProgID("Shell.Application");
