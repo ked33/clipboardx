@@ -16,3 +16,7 @@ ClipboardX-*-win-x64-*.zip
 ClipboardX/
 
 # Package manager
+
+# Debug files
+debug-*.log
+*.patch

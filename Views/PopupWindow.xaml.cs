@@ -175,6 +175,12 @@ public partial class PopupWindow : Window
     private readonly ClipboardHistoryStore _historyStore = new();
     private AppSettings? _appSettings;
     private IntPtr _lastForegroundForDialogTrack = IntPtr.Zero;
+    /// <summary>前台切换风暴时合并到单次 UI 回调，避免关闭跳转列表时 Dispatcher 队列爆炸。</summary>
+    private int _foregroundChangeCoalesceGen;
+    /// <summary>自上次 UI 处理以来，原生 WinEvent 前台回调次数（合并前）。</summary>
+    private int _foregroundNativeBurst;
+    /// <summary>因序号过期而跳过的 UI 调度次数（合并丢弃的 BeginInvoke）。</summary>
+    private int _foregroundUiDispatchSuperseded;
 
     #region agent log
     private int _agentDbgDragMoveLogCount;
@@ -246,6 +252,8 @@ public partial class PopupWindow : Window
     private int _fileJumpAutoSyncScheduleGen;
     /// <summary>对话框路径快照分层等待调度代数。</summary>
     private int _dialogSnapshotScheduleGen;
+    private IntPtr _snapshotFolderDebounceHwnd;
+    private long _snapshotFolderDebounceTick;
     /// <summary>最近一次离开外部文件管理器时记录到的路径；用于切回文件对话框时优先同步。</summary>
     private string _lastExternalFolder = "";
     private IntPtr _lastExternalManagerRoot = IntPtr.Zero;
@@ -335,6 +343,11 @@ public partial class PopupWindow : Window
         UpdateEmptyState();
         UpdateBatchHeaderUi();
         TextEntryEditPopup.CustomPopupPlacementCallback = TextEntryEditCustomPlacement;
+
+#if CLIPX_CLIPBOARD
+        // 根据设置初始化键盘钩子（如果启用了 ReplaceSystemWinV 或其他需要钩子的功能）
+        SyncBatchPasteKeyboardHook();
+#endif
     }
 
     public void Cleanup()
@@ -454,6 +467,11 @@ public partial class PopupWindow : Window
         }
 
         UpdateFooterHints();
+
+#if CLIPX_CLIPBOARD
+        // 更新键盘钩子状态（可能因为 ReplaceSystemWinV 设置变化需要激活/停用钩子）
+        SyncBatchPasteKeyboardHook();
+#endif
     }
 
     public void ClearHistory()
@@ -1427,13 +1445,14 @@ public partial class PopupWindow : Window
     }
 
 #if CLIPX_CLIPBOARD
-    /// <summary>面板显示、FIFO/LIFO 且队列非空、或「队已贴完等下一次粘键切回普通」时需 WH_KEYBOARD_LL（隐藏面板时仅靠此项收全局粘贴键）。</summary>
+    /// <summary>面板显示、FIFO/LIFO 且队列非空、或「队已贴完等下一次粘键切回普通」、或启用了替换系统 Win+V 时需 WH_KEYBOARD_LL。</summary>
     private void SyncBatchPasteKeyboardHook()
     {
         var need = _isPopupVisible
             || (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0)
             || _awaitHotkeyAltChordCleanup
-            || _batchQueueAwaitingNextPasteToSwitchOff;
+            || _batchQueueAwaitingNextPasteToSwitchOff
+            || (_appSettings?.ReplaceSystemWinV ?? false);
         if (need)
             InstallKeyboardHook();
         else
@@ -3127,35 +3146,6 @@ public partial class PopupWindow : Window
         return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
     }
 
-    private static IntPtr StaticMouseHookProc(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        var owner = s_popupMouseHookOwner;
-        var hhk = s_popupMouseHookForNext;
-        if (owner != null && hhk != IntPtr.Zero)
-            return owner.MouseHookCallback(nCode, wParam, lParam);
-        return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
-    }
-
-    private static IntPtr StaticFileJumpAutoMouseProc(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        var owner = s_fileJumpAutoMouseOwner;
-        var hhk = s_fileJumpAutoMouseHookForNext;
-        if (owner != null && hhk != IntPtr.Zero)
-            return owner.FileJumpAutoMouseHookCallback(nCode, wParam, lParam);
-        return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
-    }
-
-#if CLIPX_FILEJUMP
-    private static IntPtr StaticFileJumpPersistMouseProc(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        var owner = s_fileJumpPersistMouseOwner;
-        var hhk = s_fileJumpPersistMouseHookForNext;
-        if (owner != null && hhk != IntPtr.Zero)
-            return owner.FileJumpPersistMouseHookCallback(nCode, wParam, lParam);
-        return Win32.CallNextHookEx(hhk, nCode, wParam, lParam);
-    }
-#endif
-
     private void InstallKeyboardHook()
     {
         if (_keyboardHook != IntPtr.Zero) return;
@@ -3177,220 +3167,6 @@ public partial class PopupWindow : Window
             s_popupKeyboardHookOwner = null;
             s_popupKeyboardHookForNext = IntPtr.Zero;
         }
-    }
-
-    private void InstallMouseHook()
-    {
-        if (_mouseHook != IntPtr.Zero) return;
-        s_popupMouseHookOwner = this;
-        _mouseHook = Win32.SetWindowsHookEx(
-            Win32.WH_MOUSE_LL, s_popupMouseHookThunk, Win32.GetModuleHandle(null), 0);
-        s_popupMouseHookForNext = _mouseHook;
-    }
-
-    private void UninstallMouseHook()
-    {
-        if (_mouseHook != IntPtr.Zero)
-        {
-            Win32.UnhookWindowsHookEx(_mouseHook);
-            _mouseHook = IntPtr.Zero;
-        }
-        if (s_popupMouseHookOwner == this)
-        {
-            s_popupMouseHookOwner = null;
-            s_popupMouseHookForNext = IntPtr.Zero;
-        }
-    }
-
-    private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0 && _isPopupVisible)
-        {
-            var msg = wParam.ToInt32();
-            var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-
-            if (_isDragging)
-            {
-                if (msg == Win32.WM_LBUTTONUP)
-                {
-                    // 壳/DWM 可能在钩子最后一帧 WM_MOUSEMOVE 与松手之间改写 HWND；此处立即对齐权威位置，减少与 BeginInvoke(Sync) 的竞态。
-                    if (Win32.GetWindowRect(_hwnd, out var rcUp))
-                    {
-                        int dl = Math.Abs(rcUp.Left - _hookAuthPhysLeft);
-                        int dt = Math.Abs(rcUp.Top - _hookAuthPhysTop);
-                        if (dl > 8 || dt > 8)
-                        {
-                            #region agent log
-                            AgentDbgLog("H15", "MouseHook WM_LBUTTONUP", "immediate drift vs hook auth; restoring",
-                                new { rcUp.Left, rcUp.Top, _hookAuthPhysLeft, _hookAuthPhysTop, dl, dt });
-                            #endregion
-                            _isOurSetWindowPos = true;
-                            try
-                            {
-                                Win32.SetWindowPos(_hwnd, IntPtr.Zero, _hookAuthPhysLeft, _hookAuthPhysTop, 0, 0,
-                                    Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE | Win32.SWP_NOSENDCHANGING);
-                            }
-                            finally
-                            {
-                                _isOurSetWindowPos = false;
-                            }
-                            _postDragHookAuthLeft = int.MinValue;
-                        }
-                        else
-                        {
-                            _postDragHookAuthLeft = _hookAuthPhysLeft;
-                            _postDragHookAuthTop = _hookAuthPhysTop;
-                        }
-                    }
-                    else
-                    {
-                        _postDragHookAuthLeft = _hookAuthPhysLeft;
-                        _postDragHookAuthTop = _hookAuthPhysTop;
-                    }
-
-                    _isDragging = false;
-                    #region agent log
-                    _agentDbgDragMoveLogCount = 0;
-                    #endregion
-                    // 拖动结束再同步 WPF Left/Top；拖动过程中若每帧 TransformFromDevice，跨屏时与 HWND 实际所在监视器 DPI 不一致会导致错位。
-                    Dispatcher.BeginInvoke(DispatcherPriority.Input,
-                        new Action(() => SyncWindowPhysicalPositionToWpf("mouseHookLButtonUp")));
-                }
-                else if (msg == Win32.WM_MOUSEMOVE)
-                {
-                    // 必须用 GetCursorPos 与 Header_DragStart 一致：运行时日志显示 MSLLHOOKSTRUCT.pt 与 GetCursorPos
-                    // 在混合 DPI 下可差 2 倍（如 pt.X=3221 而 GetCursorPos=6442），用 pt 算 dx 会把窗口 SetWindowPos 到错误屏区。
-                    if (!Win32.GetCursorPos(out var curPt))
-                        return Win32.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
-                    var dx = curPt.X - _dragLastPt.X;
-                    var dy = curPt.Y - _dragLastPt.Y;
-                    if (dx != 0 || dy != 0)
-                    {
-                        if (Win32.GetWindowRect(_hwnd, out var rc))
-                        {
-                            var nx = rc.Left + dx;
-                            var ny = rc.Top + dy;
-                            _isOurSetWindowPos = true;
-                            try
-                            {
-                                Win32.SetWindowPos(_hwnd, IntPtr.Zero,
-                                    nx, ny, 0, 0,
-                                    Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE
-                                    | Win32.SWP_NOSENDCHANGING);
-                            }
-                            finally
-                            {
-                                _isOurSetWindowPos = false;
-                            }
-
-                            Win32.GetWindowRect(_hwnd, out var rcAfter);
-                            _hookAuthPhysLeft = rcAfter.Left;
-                            _hookAuthPhysTop = rcAfter.Top;
-
-                            // 拖动中不同步 WPF Left/Top：日志显示每帧 Sync 与 SetWindowPos 竞争，且 desk→TryApply 曾把物理像素当 DIP，导致 HWND 跳到 2× 位置（如 486→972）。
-                            #region agent log
-                            if (_agentDbgH21MismatchLogCount < 50 &&
-                                (Math.Abs(rcAfter.Left - nx) > 16 || Math.Abs(rcAfter.Top - ny) > 16))
-                            {
-                                _agentDbgH21MismatchLogCount++;
-                                AgentDbgLog("H21", "MouseHook WM_MOUSEMOVE", "SetWindowPos vs GetWindowRect mismatch (shell/DWM?)",
-                                    new
-                                    {
-                                        nx,
-                                        ny,
-                                        actualLeft = rcAfter.Left,
-                                        actualTop = rcAfter.Top,
-                                        dlx = rcAfter.Left - nx,
-                                        dty = rcAfter.Top - ny
-                                    });
-                            }
-                            #endregion
-                            #region agent log
-                            if (_agentDbgDragMoveLogCount < 500)
-                            {
-                                _agentDbgDragMoveLogCount++;
-                                AgentDbgLog("H3", "MouseHookCallback WM_MOUSEMOVE", "after SetWindowPos+Sync",
-                                    new
-                                    {
-                                        nx,
-                                        ny,
-                                        rcAfter.Left,
-                                        rcAfter.Top,
-                                        wpfLeft = Left,
-                                        wpfTop = Top,
-                                        cursorX = curPt.X,
-                                        cursorY = curPt.Y,
-                                        hookPtX = info.pt.X,
-                                        hookPtY = info.pt.Y
-                                    });
-                            }
-                            #endregion
-                            #region agent log
-                            if (_agentDbgH20LogCount < 40 && _agentDbgCachedPrimarySeamX != int.MinValue)
-                            {
-                                int sx = _agentDbgCachedPrimarySeamX;
-                                if (rcAfter.Left < sx && rcAfter.Right > sx)
-                                {
-                                    int ww = rcAfter.Right - rcAfter.Left;
-                                    if (ww > 0)
-                                    {
-                                        double frac = (sx - rcAfter.Left) / (double)ww;
-                                        AgentDbgLog("H20", "MouseHook WM_MOUSEMOVE", "straddle primary vertical seam",
-                                            new { sx, rcAfter.Left, rcAfter.Right, fracFromWindowLeft = frac });
-                                        _agentDbgH20LogCount++;
-                                    }
-                                }
-                            }
-                            #endregion
-                            #region agent log
-                            if (_agentDbgH22WpfHwndDipLogCount < 30 &&
-                                _agentDbgCachedPrimarySeamX != int.MinValue)
-                            {
-                                int sx = _agentDbgCachedPrimarySeamX;
-                                if (rcAfter.Left < sx && rcAfter.Right > sx)
-                                {
-                                    int wStr = rcAfter.Right - rcAfter.Left;
-                                    int hStr = rcAfter.Bottom - rcAfter.Top;
-                                    if (wStr > 0 && hStr > 0 &&
-                                        TryPhysicalScreenTopLeftToWpfDip(rcAfter.Left, rcAfter.Top, wStr, hStr, out var expL, out var expT, agentLogH19: false))
-                                    {
-                                        double dL = Left - expL;
-                                        double dT = Top - expT;
-                                        if (Math.Abs(dL) > 3 || Math.Abs(dT) > 3)
-                                        {
-                                            _agentDbgH22WpfHwndDipLogCount++;
-                                            AgentDbgLog("H22", "MouseHook WM_MOUSEMOVE", "WPF Left/Top vs hwnd→DIP (straddle)",
-                                                new { wpfLeft = Left, wpfTop = Top, expL, expT, dL, dT, physLeft = rcAfter.Left, physTop = rcAfter.Top });
-                                        }
-                                    }
-                                }
-                            }
-                            #endregion
-                        }
-
-                        _dragLastPt = curPt;
-                    }
-                }
-
-                return Win32.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
-            }
-
-            if (msg is Win32.WM_LBUTTONDOWN or Win32.WM_RBUTTONDOWN)
-            {
-                if (_hideOnSameAppClick)
-                {
-                    _clickReceivedByPopup = false;
-                    Dispatcher.BeginInvoke(
-                        System.Windows.Threading.DispatcherPriority.Background, () =>
-                        {
-                            if (_isPopupVisible && !_clickReceivedByPopup
-                                && !ContextPopup.IsOpen && !PhraseEditPopup.IsOpen && !TextEntryEditPopup.IsOpen)
-                                HidePopup();
-                        });
-                }
-            }
-        }
-        return Win32.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
     private static void StaticWinEventProc(
@@ -3486,48 +3262,105 @@ public partial class PopupWindow : Window
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
+        Interlocked.Increment(ref _foregroundNativeBurst);
         var prev = _lastForegroundForDialogTrack;
         _lastForegroundForDialogTrack = hwnd;
 
-        Dispatcher.BeginInvoke(() => TryRememberFolderFromDialog(prev));
-        Dispatcher.BeginInvoke(() => TryRememberExternalManagerFolder(prev));
-        Dispatcher.BeginInvoke(() => TryRememberExternalManagerFolder(hwnd));
-
-        var dialogForForeground = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
-        if (dialogForForeground != IntPtr.Zero)
+        int seq = Interlocked.Increment(ref _foregroundChangeCoalesceGen);
+        var prevCap = prev;
+        var hwndCap = hwnd;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
         {
-            var prevForAutoSync = prev;
-            ScheduleSnapshotFolderFromDialog(dialogForForeground);
-            Dispatcher.BeginInvoke(() =>
+            if (seq != Volatile.Read(ref _foregroundChangeCoalesceGen))
             {
-                if (_appSettings == null) return;
-                if (_appSettings.FileJumpPickerOpenWhenDialogForeground)
-                    TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground);
-                else if (_appSettings.FileJumpAutoOnFirstClick)
-                    TryAutoNavigateBestPathWhenDialogForeground(dialogForForeground);
-            });
-            Dispatcher.BeginInvoke(() => TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync));
+                Interlocked.Increment(ref _foregroundUiDispatchSuperseded);
+                return;
+            }
+
+            int nat = Interlocked.Exchange(ref _foregroundNativeBurst, 0);
+            int super = Interlocked.Exchange(ref _foregroundUiDispatchSuperseded, 0);
+            ProcessForegroundChangedUi(prevCap, hwndCap, nat, super);
+        });
+    }
+
+    /// <summary>
+    /// 原 OnForegroundChanged 内多次 BeginInvoke 会在前台连发时撑爆队列（尤其关跳转列表瞬间），
+    /// 与跳转窗共用同一 Dispatcher 时表现为长时间卡顿。
+    /// </summary>
+    private void ProcessForegroundChangedUi(IntPtr prev, IntPtr hwnd, int nativeBurst, int supersededDispatches)
+    {
+        var sw = Stopwatch.StartNew();
+        TryRememberFolderFromDialog(prev);
+        TryRememberExternalManagerFolder(prev);
+        TryRememberExternalManagerFolder(hwnd);
+
+        // 列表已开时前台常在列表↔文件框间跳：勿重复快照 / 自动弹 / 切回同步（减少定时器与 STA 采集叠压）。
+        if (_activeFileJumpPicker == null)
+        {
+            var dialogForForeground = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+            if (dialogForForeground != IntPtr.Zero)
+            {
+                var prevForAutoSync = prev;
+                ScheduleSnapshotFolderFromDialog(dialogForForeground);
+                if (_appSettings != null)
+                {
+                    if (_appSettings.FileJumpPickerOpenWhenDialogForeground)
+                        TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground);
+                    else if (_appSettings.FileJumpAutoOnFirstClick)
+                        TryAutoNavigateBestPathWhenDialogForeground(dialogForForeground);
+                }
+
+                TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync);
+            }
+
+            var armTarget = dialogForForeground != IntPtr.Zero
+                ? dialogForForeground
+                : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+            UpdateFileJumpClickToNavigateArm(armTarget != IntPtr.Zero ? armTarget : hwnd);
+        }
+        else
+        {
+            var dlgPick = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+            var armPick = dlgPick != IntPtr.Zero
+                ? dlgPick
+                : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+            UpdateFileJumpClickToNavigateArm(armPick != IntPtr.Zero ? armPick : hwnd);
         }
 
-        var armTarget = dialogForForeground != IntPtr.Zero
-            ? dialogForForeground
-            : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
-        Dispatcher.BeginInvoke(() =>
-            UpdateFileJumpClickToNavigateArm(armTarget != IntPtr.Zero ? armTarget : hwnd));
+        var shouldHidePopup = _isPopupVisible
+            && hwnd != _hwnd
+            && hwnd != _targetWindow;
+        if (shouldHidePopup)
+        {
+            Win32.GetCursorPos(out var cursor);
+            if (Win32.WindowFromPoint(cursor) != _hwnd)
+                HidePopup();
+        }
 
-        if (!_isPopupVisible) return;
-        if (hwnd == _hwnd || hwnd == _targetWindow) return;
-
-        Win32.GetCursorPos(out var cursor);
-        if (Win32.WindowFromPoint(cursor) == _hwnd) return;
-
-        Dispatcher.BeginInvoke(() => HidePopup());
+        sw.Stop();
+        int ms = (int)sw.ElapsedMilliseconds;
+        bool pickerOpen = _activeFileJumpPicker != null;
+        bool logFg = nativeBurst >= 2 || supersededDispatches > 0 || ms >= 15 || pickerOpen
+            || _fileJumpPickerOpenInProgress || ms >= 40;
+        if (logFg)
+        {
+            var slow = ms >= 40 ? " SLOW" : "";
+            ShellNavigateLog.Write("filejump",
+                $"fg_ui nat={nativeBurst} super={supersededDispatches} ms={ms} prev=0x{prev.ToInt64():X} hwnd=0x{hwnd.ToInt64():X} picker={pickerOpen} openInProg={_fileJumpPickerOpenInProgress}{slow}");
+        }
     }
 
     /// <summary>对话框成为前台后分层短等再读路径：先快试，读不到再逐段补等（总上限接近原先单次长等）。</summary>
     private void ScheduleSnapshotFolderFromDialog(IntPtr dialogHwnd)
     {
         if (_appSettings == null || dialogHwnd == IntPtr.Zero) return;
+        var nowSnap = Environment.TickCount64;
+        if (dialogHwnd == _snapshotFolderDebounceHwnd
+            && nowSnap - _snapshotFolderDebounceTick < 450)
+            return;
+        _snapshotFolderDebounceHwnd = dialogHwnd;
+        _snapshotFolderDebounceTick = nowSnap;
+
         unchecked { _dialogSnapshotScheduleGen++; }
         var scheduleGen = _dialogSnapshotScheduleGen;
         var target = dialogHwnd;
@@ -3924,9 +3757,9 @@ public partial class PopupWindow : Window
         _fileJumpAutoOpenDebounceTimer = null;
         var hwndCapture = foregroundHwnd;
         var delayMs = Math.Clamp(_appSettings.FileJumpPickerShowDelayMs, 0, 10000);
-        // 打开/保存窗到前台时，系统常在极短时间内多次触发；延时为 0 时仍用短防抖合并，避免并行多个 STA 采集线程。
-        // 采集本身已压到数十毫秒级（见 debug 日志），此处过长会明显拖慢「延时填 0」时的体感。
-        var effectiveMs = delayMs <= 0 ? 80 : delayMs;
+        // 打开/保存窗到前台时，系统常在极短时间内多次触发；延时为 0 时仍用约一帧的防抖合并，避免并行多个 STA 采集线程。
+        // 原先固定 80ms 会明显拖慢「立即弹出」的体感。
+        var effectiveMs = delayMs <= 0 ? 16 : delayMs;
 
         _fileJumpAutoOpenDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(effectiveMs) };
         _fileJumpAutoOpenDebounceTimer.Tick += (_, _) =>
@@ -4419,8 +4252,6 @@ public partial class PopupWindow : Window
 
         var delayMs = Math.Clamp(_appSettings.FileJumpPickerShowDelayMs, 0, 10000);
 
-        var openPriority = delayMs <= 0 ? DispatcherPriority.Input : DispatcherPriority.Normal;
-
         void QueueOpenFileJumpPicker()
         {
             Dispatcher.BeginInvoke(() =>
@@ -4499,7 +4330,7 @@ public partial class PopupWindow : Window
                         _activeFileJumpPicker = null;
                     _fileJumpPickerOpenInProgress = false;
                 }
-            }, openPriority);
+            }, DispatcherPriority.Input);
         }
 
         if (delayMs <= 0)
@@ -4582,95 +4413,6 @@ public partial class PopupWindow : Window
             s_fileJumpAutoMouseOwner = null;
             s_fileJumpAutoMouseHookForNext = IntPtr.Zero;
         }
-    }
-
-    private void InstallFileJumpAutoMouseHook()
-    {
-        if (_fileJumpAutoMouseHook != IntPtr.Zero) return;
-        s_fileJumpAutoMouseOwner = this;
-        _fileJumpAutoMouseHook = Win32.SetWindowsHookEx(
-            Win32.WH_MOUSE_LL, s_fileJumpAutoMouseThunk, Win32.GetModuleHandle(null), 0);
-        s_fileJumpAutoMouseHookForNext = _fileJumpAutoMouseHook;
-    }
-
-#if CLIPX_FILEJUMP
-    private void InstallFileJumpPersistFolderHook()
-    {
-        if (_fileJumpPersistMouseHook != IntPtr.Zero) return;
-        s_fileJumpPersistMouseOwner = this;
-        _fileJumpPersistMouseHook = Win32.SetWindowsHookEx(
-            Win32.WH_MOUSE_LL, s_fileJumpPersistMouseThunk, Win32.GetModuleHandle(null), 0);
-        s_fileJumpPersistMouseHookForNext = _fileJumpPersistMouseHook;
-    }
-
-    private void UninstallFileJumpPersistFolderHook()
-    {
-        if (_fileJumpPersistMouseHook != IntPtr.Zero)
-        {
-            Win32.UnhookWindowsHookEx(_fileJumpPersistMouseHook);
-            _fileJumpPersistMouseHook = IntPtr.Zero;
-        }
-
-        if (s_fileJumpPersistMouseOwner == this)
-        {
-            s_fileJumpPersistMouseOwner = null;
-            s_fileJumpPersistMouseHookForNext = IntPtr.Zero;
-        }
-    }
-
-    private IntPtr FileJumpPersistMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0
-            && _appSettings != null
-            && wParam.ToInt32() == Win32.WM_LBUTTONDOWN)
-        {
-            var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-            if (FileDialogConfirmClick.TryResolveDialogOnPrimaryConfirmClick(info.pt, out var dialogHwnd))
-            {
-                var dlgCapture = dialogHwnd;
-                Dispatcher.BeginInvoke(new Action(() => TryPersistRecentFolderAfterPrimaryClick(dlgCapture)),
-                    DispatcherPriority.Send);
-            }
-        }
-
-        return Win32.CallNextHookEx(_fileJumpPersistMouseHook, nCode, wParam, lParam);
-    }
-
-    private void TryPersistRecentFolderAfterPrimaryClick(IntPtr dialogHwnd)
-    {
-        try
-        {
-            if (_appSettings == null) return;
-            if (dialogHwnd == IntPtr.Zero || !Win32.IsWindow(dialogHwnd)) return;
-            if (!FileDialogJumpHelper.TryReadCurrentFolder(dialogHwnd, out var folder)
-                || string.IsNullOrEmpty(folder)) return;
-            RememberLastDialogFolder(folder);
-        }
-        catch (Exception ex)
-        {
-            ShellNavigateLog.Write("filejump", "TryPersistRecentFolderAfterPrimaryClick: " + ex);
-        }
-    }
-#endif
-
-    private IntPtr FileJumpAutoMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0
-            && _fileJumpAutoArmedRoot != IntPtr.Zero
-            && _appSettings != null
-            && _appSettings.FileJumpAutoOnFirstClick
-            && wParam.ToInt32() == Win32.WM_LBUTTONDOWN)
-        {
-            var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-            var clickHwnd = Win32.WindowFromPoint(info.pt);
-            if (clickHwnd != IntPtr.Zero
-                && Win32.GetAncestor(clickHwnd, Win32.GA_ROOT) == _fileJumpAutoArmedRoot)
-            {
-                Dispatcher.BeginInvoke(new Action(TryFileJumpAutoNavigateAfterClick),
-                    System.Windows.Threading.DispatcherPriority.Normal);
-            }
-        }
-        return Win32.CallNextHookEx(_fileJumpAutoMouseHook, nCode, wParam, lParam);
     }
 
     /// <summary>
@@ -4771,644 +4513,6 @@ public partial class PopupWindow : Window
             DisarmFileJumpClickToNavigate();
         }
     }
-
-    private static bool IsMenuAltVk(uint vk) =>
-        vk == 0x12 || vk == 0xA4 || vk == 0xA5;
-
-    /// <summary>批量子菜单/右键菜单打开时：钩子内按设置匹配与 RegisterHotKey 相同的组合（Alt 已由本钩吞掉，宿主收不到）。</summary>
-    private bool TryDispatchRegisteredAppHotkeyChordFromHook(uint vkCode)
-    {
-        if (_appSettings == null) return false;
-#if CLIPX_CLIPBOARD
-        if (HotkeyChordMatches(_hotkeyModifiers) && vkCode == _hotkeyKey)
-        {
-            Dispatcher.BeginInvoke(TogglePopup);
-            return true;
-        }
-#endif
-        if (HotkeyChordMatches(_appSettings.BatchModeCycleHotkeyModifiers)
-            && vkCode == _appSettings.BatchModeCycleHotkeyKey)
-        {
-            Dispatcher.BeginInvoke(CycleBatchPasteMode);
-            return true;
-        }
-        if (HotkeyChordMatches(_fileJumpHotkeyModifiers) && vkCode == _fileJumpHotkeyKey)
-        {
-            Dispatcher.BeginInvoke(TryJumpFileDialogToLastFolder);
-            return true;
-        }
-        if (HotkeyChordMatches(_panelPageScrollUpModifiers) && vkCode == _panelPageScrollUpKey)
-        {
-            Dispatcher.BeginInvoke(() => ScrollPage(-1));
-            return true;
-        }
-        if (HotkeyChordMatches(_panelPageScrollDownModifiers) && vkCode == _panelPageScrollDownKey)
-        {
-            Dispatcher.BeginInvoke(() => ScrollPage(1));
-            return true;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// 低级钩子里拦截物理 Alt KeyUp 后，注入 Ctrl Down → Ctrl Up → Alt Up（均带注入标志），
-    /// 供宿主将松键视为带 Ctrl 的收尾而非单独 Alt，避免 VS Code 等菜单栏抢焦点。
-    /// </summary>
-    private static void InjectSyntheticHotkeyAltChordCleanup(Win32.KBDLLHOOKSTRUCT kb)
-    {
-        uint ext = (kb.flags & 0x01) != 0 ? Win32.KEYEVENTF_EXTENDEDKEY : 0u;
-        var inputs = new Win32.INPUT[3];
-
-        inputs[0].type = Win32.INPUT_KEYBOARD;
-        inputs[0].u.ki.wVk = Win32.VK_CONTROL;
-        inputs[0].u.ki.wScan = 0;
-        inputs[0].u.ki.dwFlags = 0;
-        inputs[0].u.ki.time = 0;
-        inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
-
-        inputs[1].type = Win32.INPUT_KEYBOARD;
-        inputs[1].u.ki.wVk = Win32.VK_CONTROL;
-        inputs[1].u.ki.wScan = 0;
-        inputs[1].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP;
-        inputs[1].u.ki.time = 0;
-        inputs[1].u.ki.dwExtraInfo = IntPtr.Zero;
-
-        inputs[2].type = Win32.INPUT_KEYBOARD;
-        inputs[2].u.ki.wVk = (ushort)kb.vkCode;
-        inputs[2].u.ki.wScan = 0;
-        inputs[2].u.ki.dwFlags = Win32.KEYEVENTF_KEYUP | ext;
-        inputs[2].u.ki.time = 0;
-        inputs[2].u.ki.dwExtraInfo = IntPtr.Zero;
-
-        Win32.SendInput(3, inputs, Marshal.SizeOf<Win32.INPUT>());
-    }
-
-#if CLIPX_FILEJUMP
-    private static bool IsSystemExplorerForeground()
-    {
-        var fg = Win32.GetForegroundWindow();
-        return FileManagerPathCollector.TryFindExplorerCabinetFrame(fg) != IntPtr.Zero;
-    }
-#endif
-
-    private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode < 0)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        var msg = wParam.ToInt32();
-        var kb = Marshal.PtrToStructure<Win32.KBDLLHOOKSTRUCT>(lParam);
-        var isKeyDown = msg is Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN;
-        var isKeyUp = msg is Win32.WM_KEYUP or Win32.WM_SYSKEYUP;
-
-#if CLIPX_CLIPBOARD
-        // 非本窗口内 Ctrl+V 松 V、或 Shift+Insert 松 Insert：FIFO/LIFO 出队并写下一项到剪贴板；不拦截按键
-        if (isKeyUp)
-        {
-            var injEarly = (kb.flags & (Win32.LLKHF_INJECTED | Win32.LLKHF_LOWER_IL_INJECTED)) != 0;
-            if (!injEarly && !_isSettingClipboard && !_pasteInProgress && _activeFileJumpPicker == null)
-            {
-                bool ctrlNow = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0
-                    || (Win32.GetAsyncKeyState(0xA2) & 0x8000) != 0
-                    || (Win32.GetAsyncKeyState(0xA3) & 0x8000) != 0;
-                bool shiftNow = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
-                    || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
-                    || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
-                bool pasteChord =
-                    (kb.vkCode == Win32.VK_V && ctrlNow)
-                    || (kb.vkCode == Win32.VK_INSERT && shiftNow);
-                if (pasteChord)
-                {
-                    var fg = Win32.GetForegroundWindow();
-                    if (fg != IntPtr.Zero && fg != _hwnd)
-                    {
-                        long tick = Environment.TickCount64;
-                        if (tick - _lastGlobalPasteQueueAdvanceTick > 120)
-                        {
-                            if ((GetBatchMode() == BatchPasteQueueMode.Fifo || GetBatchMode() == BatchPasteQueueMode.Lifo)
-                                && _batchQueue.Count == 0
-                                && (_appSettings?.BatchQueueAutoSwitchToNormalAfterQueueDone ?? true)
-                                && _batchQueueAwaitingNextPasteToSwitchOff)
-                            {
-                                _lastGlobalPasteQueueAdvanceTick = tick;
-                                Dispatcher.BeginInvoke(() => SetBatchPasteMode(BatchPasteQueueMode.Off));
-                            }
-                            else if (GetBatchMode() != BatchPasteQueueMode.Off && _batchQueue.Count > 0)
-                            {
-                                _lastGlobalPasteQueueAdvanceTick = tick;
-                                Dispatcher.BeginInvoke(new Action(TryAdvancePasteQueueAfterGlobalPaste));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-#endif
-
-        // 面板未关闭时钩子仍会吃掉未识别的键；多段粘贴中间几次不走 HidePopup，SendInput 的 Shift+Insert 必须放行。
-        if ((kb.flags & (Win32.LLKHF_INJECTED | Win32.LLKHF_LOWER_IL_INJECTED)) != 0)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        TryExpireHotkeyAltChordCleanupDeadline();
-
-        if (!_isPopupVisible && _awaitHotkeyAltChordCleanup)
-        {
-            if (_activeFileJumpPicker != null)
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-#if CLIPX_FILEJUMP
-            // 剪贴板浮层仍显示但焦点已在系统资源管理器时，必须放行低级键盘链，
-            // 否则后装的钩子无法收到按键（资源管理器内 Everything 筛选等）。
-            if (IsSystemExplorerForeground())
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-#endif
-
-            if (isKeyUp && IsMenuAltVk(kb.vkCode) && !_ctxAltAwaitRelease)
-            {
-                _awaitHotkeyAltChordCleanup = false;
-                _hotkeyAltChordCleanupDeadlineTick = 0;
-                _ctxAltComboDuringRelease = false;
-                InjectSyntheticHotkeyAltChordCleanup(kb);
-#if CLIPX_CLIPBOARD
-                SyncBatchPasteKeyboardHook();
-#else
-                if (!_isPopupVisible)
-                    UninstallKeyboardHook();
-#endif
-                return (IntPtr)1;
-            }
-
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-        }
-
-        if (!_isPopupVisible)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        if (_activeFileJumpPicker != null)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        if (TextEntryEditPopup.IsOpen)
-        {
-            if (isKeyDown)
-            {
-                if (kb.vkCode == Win32.VK_ESCAPE)
-                {
-                    Dispatcher.BeginInvoke(CancelEntryTextEdit);
-                    return (IntPtr)1;
-                }
-
-                if (kb.vkCode == Win32.VK_RETURN && IsPhysicalCtrlDown())
-                {
-                    Dispatcher.BeginInvoke(CommitEntryTextEdit);
-                    return (IntPtr)1;
-                }
-            }
-
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-        }
-
-        if (isKeyUp && IsMenuAltVk(kb.vkCode))
-        {
-            _swallowedMenuAltLatch = false;
-            if (PhraseEditPopup.IsOpen)
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-            if (_awaitHotkeyAltChordCleanup && !_ctxAltAwaitRelease)
-            {
-                _awaitHotkeyAltChordCleanup = false;
-                _hotkeyAltChordCleanupDeadlineTick = 0;
-                _ctxAltComboDuringRelease = false;
-                InjectSyntheticHotkeyAltChordCleanup(kb);
-                return (IntPtr)1;
-            }
-
-            if (BatchMenuPopup.IsOpen)
-            {
-                if (_ctxAltCloseMenuArmed && !_ctxAltComboDuringRelease)
-                    Dispatcher.BeginInvoke(() => { BatchMenuPopup.IsOpen = false; CloseBatchMenuNavUi(); });
-                _ctxAltCloseMenuArmed = false;
-                _ctxAltAwaitRelease = false;
-                _ctxAltComboDuringRelease = false;
-                return (IntPtr)1;
-            }
-
-            if (ContextPopup.IsOpen)
-            {
-                if (_ctxAltCloseMenuArmed && !_ctxAltComboDuringRelease)
-                    Dispatcher.BeginInvoke(CloseContextMenuPopup);
-                _ctxAltCloseMenuArmed = false;
-                _ctxAltAwaitRelease = false;
-                _ctxAltComboDuringRelease = false;
-                return (IntPtr)1;
-            }
-
-            if (_ctxAltAwaitRelease && !_ctxAltComboDuringRelease)
-                Dispatcher.BeginInvoke(TryOpenBatchOrContextMenuFromKeyboard);
-            _ctxAltAwaitRelease = false;
-            _ctxAltComboDuringRelease = false;
-            // 吞掉 Alt 松开，避免宿主在未收到 Down 时仍收到 Up，或双次触发菜单栏
-            return (IntPtr)1;
-        }
-
-        if (!isKeyDown)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        if (PhraseEditPopup.IsOpen)
-        {
-            if (kb.vkCode == Win32.VK_ESCAPE)
-            {
-                Dispatcher.BeginInvoke(() =>
-                {
-                    PhraseEditPopup.IsOpen = false;
-                    _phraseEditEntry = null;
-                    _phraseEditBuffer = "";
-                });
-                return (IntPtr)1;
-            }
-            if (kb.vkCode == Win32.VK_RETURN)
-            {
-                Dispatcher.BeginInvoke(CommitPhraseEdit);
-                return (IntPtr)1;
-            }
-
-            if (kb.vkCode is 0x10 or 0x11 or 0x14
-                or 0xA0 or 0xA1 or 0xA2 or 0xA3
-                or 0x5B or 0x5C)
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-            bool phraseCtrlDown = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0;
-            bool phraseAltDown = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
-            bool phraseWinDown = ((Win32.GetAsyncKeyState(0x5B) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0x5C) & 0x8000) != 0);
-            if (phraseCtrlDown || phraseAltDown || phraseWinDown)
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-            if (kb.vkCode == Win32.VK_BACK)
-            {
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (_phraseEditBuffer.Length > 0)
-                        _phraseEditBuffer = _phraseEditBuffer[..^1];
-                    RefreshPhraseEditDisplay();
-                });
-                return (IntPtr)1;
-            }
-
-            if (kb.vkCode == 0x09)
-                return (IntPtr)1;
-
-            if (kb.vkCode == Win32.VK_SPACE)
-            {
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (_phraseEditBuffer.Length < PhraseEditMaxLen)
-                        _phraseEditBuffer += " ";
-                    RefreshPhraseEditDisplay();
-                });
-                return (IntPtr)1;
-            }
-
-            if (kb.vkCode is Win32.VK_UP or Win32.VK_DOWN or Win32.VK_LEFT or Win32.VK_RIGHT
-                or Win32.VK_HOME or Win32.VK_END or Win32.VK_PRIOR or Win32.VK_NEXT
-                or Win32.VK_DELETE)
-                return (IntPtr)1;
-
-            var pch = VkToChar(kb.vkCode, kb.scanCode);
-            if (pch.HasValue && _phraseEditBuffer.Length < PhraseEditMaxLen)
-                Dispatcher.BeginInvoke(() =>
-                {
-                    _phraseEditBuffer += pch.Value;
-                    RefreshPhraseEditDisplay();
-                });
-            return (IntPtr)1;
-        }
-
-        if (BatchMenuPopup.IsOpen)
-        {
-            if (IsMenuAltVk(kb.vkCode))
-            {
-                _ctxAltCloseMenuArmed = true;
-                _ctxAltComboDuringRelease = false;
-                return (IntPtr)1;
-            }
-
-            if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
-                return (IntPtr)1;
-
-            bool altPhyB = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
-            if (_ctxAltCloseMenuArmed && altPhyB)
-                _ctxAltComboDuringRelease = true;
-
-            switch (kb.vkCode)
-            {
-                case Win32.VK_UP:
-                    Dispatcher.BeginInvoke(() => MoveBatchMenuHighlight(-1));
-                    return (IntPtr)1;
-                case Win32.VK_DOWN:
-                    Dispatcher.BeginInvoke(() => MoveBatchMenuHighlight(1));
-                    return (IntPtr)1;
-                case Win32.VK_RETURN:
-                    Dispatcher.BeginInvoke(ActivateBatchMenuHighlight);
-                    return (IntPtr)1;
-                case Win32.VK_ESCAPE:
-                    Dispatcher.BeginInvoke(() => { BatchMenuPopup.IsOpen = false; CloseBatchMenuNavUi(); });
-                    return (IntPtr)1;
-                default:
-                    return (IntPtr)1;
-            }
-        }
-
-        if (ContextPopup.IsOpen)
-        {
-            if (IsMenuAltVk(kb.vkCode))
-            {
-                _ctxAltCloseMenuArmed = true;
-                _ctxAltComboDuringRelease = false;
-                return (IntPtr)1;
-            }
-
-            if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
-                return (IntPtr)1;
-
-            bool altPhy = ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
-                || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
-            if (_ctxAltCloseMenuArmed && altPhy)
-                _ctxAltComboDuringRelease = true;
-
-            switch (kb.vkCode)
-            {
-                case Win32.VK_UP:
-                    Dispatcher.BeginInvoke(() => MoveContextMenuHighlight(-1));
-                    return (IntPtr)1;
-                case Win32.VK_DOWN:
-                    Dispatcher.BeginInvoke(() => MoveContextMenuHighlight(1));
-                    return (IntPtr)1;
-                case Win32.VK_RETURN:
-                    Dispatcher.BeginInvoke(ActivateContextMenuHighlight);
-                    return (IntPtr)1;
-                case Win32.VK_ESCAPE:
-                    Dispatcher.BeginInvoke(CloseContextMenuPopup);
-                    return (IntPtr)1;
-                default:
-                    return (IntPtr)1;
-            }
-        }
-
-        if (IsMenuAltVk(kb.vkCode) && !PhraseEditPopup.IsOpen && !TextEntryEditPopup.IsOpen && !ContextPopup.IsOpen && !BatchMenuPopup.IsOpen)
-        {
-            _swallowedMenuAltLatch = true;
-            if (!_awaitHotkeyAltChordCleanup)
-            {
-                _ctxAltAwaitRelease = true;
-                _ctxAltComboDuringRelease = false;
-            }
-            // 吞掉 Alt 按下，不透传到宿主，避免 Word/浏览器等抢菜单焦点、Access Key 导致剪贴板面板失焦。
-            // 单按 Alt 松开后仍由上方 KeyUp 分支打开本面板右键/批量菜单（_ctxAltAwaitRelease）。
-            return (IntPtr)1;
-        }
-
-        if (_ctxAltAwaitRelease && !IsMenuAltVk(kb.vkCode))
-            _ctxAltComboDuringRelease = true;
-
-        if (kb.vkCode is 0x10 or 0x11 or 0x14
-            or 0xA0 or 0xA1 or 0xA2 or 0xA3
-            or 0x5B or 0x5C)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        if (HotkeyChordMatches(_panelPageScrollUpModifiers) && kb.vkCode == _panelPageScrollUpKey)
-        {
-            Dispatcher.BeginInvoke(() => ScrollPage(-1));
-            return (IntPtr)1;
-        }
-
-        if (HotkeyChordMatches(_panelPageScrollDownModifiers) && kb.vkCode == _panelPageScrollDownKey)
-        {
-            Dispatcher.BeginInvoke(() => ScrollPage(1));
-            return (IntPtr)1;
-        }
-
-        // 必须在 IsPanelModifierDown / ctrlHeld||altHeld 放行之前：否则 Alt+`、Alt+/ 会 CallNextHookEx 进搜索框打出字符。
-        if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
-            return (IntPtr)1;
-
-        bool ctrlHeld = IsPhysicalCtrlDown();
-        bool altHeld = AltEffectiveForRegisteredChord();
-
-        if (IsPanelModifierDown())
-        {
-            if (kb.vkCode >= 0x31 && kb.vkCode <= 0x39)
-            {
-                int idx = (int)(kb.vkCode - 0x30);
-                Dispatcher.BeginInvoke(() => PasteByIndex(idx));
-                return (IntPtr)1;
-            }
-            if (kb.vkCode == 0x09)
-            {
-                Dispatcher.BeginInvoke(ToggleQuickPhraseFilter);
-                return (IntPtr)1;
-            }
-            if (kb.vkCode == Win32.VK_RETURN)
-            {
-                bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
-                Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
-                return (IntPtr)1;
-            }
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-        }
-
-        // Enter：不等同于「组合键放行」。Ctrl+点击多选后常仍按住 Ctrl 再按回车，必须在钩子内拦截。
-        if (kb.vkCode == Win32.VK_RETURN)
-        {
-            bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
-            Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
-            return (IntPtr)1;
-        }
-
-        // Alt+ 注册热键已在上方 TryDispatch 处理。其余纯 Alt 组合吞掉，避免误入搜索框或激活宿主菜单；
-        // Ctrl+Alt 放行；Alt+Tab / Alt+F4 尽量交给系统。
-        if (ctrlHeld && altHeld)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-        if (altHeld)
-        {
-            if (kb.vkCode is 0x09 or 0x73)
-                return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-            return (IntPtr)1;
-        }
-        if (ctrlHeld)
-            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-
-        switch (kb.vkCode)
-        {
-            case Win32.VK_SPACE:
-                Dispatcher.BeginInvoke(ToggleEntryPreviewBubble);
-                return (IntPtr)1;
-            case Win32.VK_UP:
-                Dispatcher.BeginInvoke(() =>
-                {
-                    bool shift = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
-                        || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
-                        || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
-                    if (shift)
-                        MoveSelectionExtend(-1);
-                    else
-                        MoveSelection(-1);
-                });
-                return (IntPtr)1;
-            case Win32.VK_DOWN:
-                Dispatcher.BeginInvoke(() =>
-                {
-                    bool shift = (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
-                        || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
-                        || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
-                    if (shift)
-                        MoveSelectionExtend(1);
-                    else
-                        MoveSelection(1);
-                });
-                return (IntPtr)1;
-            case Win32.VK_HOME:
-                Dispatcher.BeginInvoke(MoveSelectionToFirst);
-                return (IntPtr)1;
-            case Win32.VK_END:
-                Dispatcher.BeginInvoke(MoveSelectionToLast);
-                return (IntPtr)1;
-            case Win32.VK_PRIOR:
-                Dispatcher.BeginInvoke(() => ScrollPage(-1));
-                return (IntPtr)1;
-            case Win32.VK_NEXT:
-                Dispatcher.BeginInvoke(() => ScrollPage(1));
-                return (IntPtr)1;
-            case Win32.VK_LEFT:
-                Dispatcher.BeginInvoke(() => ScrollPage(-1));
-                return (IntPtr)1;
-            case Win32.VK_RIGHT:
-                Dispatcher.BeginInvoke(() => ScrollPage(1));
-                return (IntPtr)1;
-            case Win32.VK_ESCAPE:
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (BatchMenuPopup.IsOpen)
-                    {
-                        BatchMenuPopup.IsOpen = false;
-                        CloseBatchMenuNavUi();
-                        return;
-                    }
-                    if (ContextPopup.IsOpen)
-                    {
-                        CloseContextMenuPopup();
-                        return;
-                    }
-                    if (ShortcutHelpPopup.IsOpen)
-                    {
-                        ShortcutHelpPopup.IsOpen = false;
-                        return;
-                    }
-                    if (EntryPreviewPopup.IsOpen)
-                    {
-                        CloseEntryPreviewBubble();
-                        return;
-                    }
-                    if (_pendingDeleteEntry != null)
-                    {
-                        ClearPendingDelete();
-                        return;
-                    }
-                    if (_searchText.Length > 0) { _searchText = ""; RefreshFilter(); }
-                    else HidePopup();
-                });
-                return (IntPtr)1;
-            case Win32.VK_BACK:
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (_searchText.Length > 0) { _searchText = _searchText[..^1]; RefreshFilter(); }
-                });
-                return (IntPtr)1;
-            case 0x09:
-                Dispatcher.BeginInvoke(CycleTypeFilter);
-                return (IntPtr)1;
-            case Win32.VK_DELETE:
-                Dispatcher.BeginInvoke(DeleteSelectedItemWithConfirm);
-                return (IntPtr)1;
-        }
-
-        var ch = VkToChar(kb.vkCode, kb.scanCode);
-        if (ch.HasValue)
-        {
-            if (AltEffectiveForRegisteredChord())
-                return (IntPtr)1;
-            Dispatcher.BeginInvoke(() => { _searchText += ch.Value; RefreshFilter(); });
-        }
-
-        return (IntPtr)1;
-    }
-
-    private static bool IsPhysicalCtrlDown() =>
-        (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0
-        || (Win32.GetAsyncKeyState(0xA2) & 0x8000) != 0
-        || (Win32.GetAsyncKeyState(0xA3) & 0x8000) != 0;
-
-    private bool AltPhysicallyDown() =>
-        ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
-        || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
-        || ((Win32.GetAsyncKeyState(0xA5) & 0x8000) != 0);
-
-    /// <summary>物理 Alt 或主面板吞 Alt Down 后的锁存（吞键后 GetAsyncKeyState(Alt) 常为假，导致 Alt+/ 误进搜索）。</summary>
-    private bool AltEffectiveForRegisteredChord() => AltPhysicallyDown() || _swallowedMenuAltLatch;
-
-    /// <summary>
-    /// 与 RegisterHotKey 的 fsModifiers 一致；含 <see cref="_swallowedMenuAltLatch"/> 与 AltGr（LCtrl+RAlt）兜底。
-    /// </summary>
-    private bool HotkeyChordMatches(uint requiredMods)
-    {
-        bool ctrl = IsPhysicalCtrlDown();
-        bool shift = ((Win32.GetAsyncKeyState(0x10) & 0x8000) != 0)
-            || ((Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0)
-            || ((Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0);
-        bool alt = AltEffectiveForRegisteredChord();
-        bool win = ((Win32.GetAsyncKeyState(0x5B) & 0x8000) != 0)
-            || ((Win32.GetAsyncKeyState(0x5C) & 0x8000) != 0);
-        bool reqCtrl = (requiredMods & Win32.MOD_CONTROL) != 0;
-        bool reqShift = (requiredMods & Win32.MOD_SHIFT) != 0;
-        bool reqAlt = (requiredMods & Win32.MOD_ALT) != 0;
-        bool reqWin = (requiredMods & Win32.MOD_WIN) != 0;
-        if (ctrl == reqCtrl && shift == reqShift && alt == reqAlt && win == reqWin)
-            return true;
-        if ((requiredMods & Win32.MOD_ALT) == 0 || (requiredMods & Win32.MOD_CONTROL) != 0)
-            return false;
-        bool physAlt = AltPhysicallyDown();
-        if (shift != reqShift || win != reqWin)
-            return false;
-        return physAlt && IsPhysicalCtrlDown();
-    }
-
-    private bool IsPanelModifierDown()
-    {
-        bool ctrl = (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0;
-        bool alt = (Win32.GetAsyncKeyState(0x12) & 0x8000) != 0;
-        bool win = ((Win32.GetAsyncKeyState(0x5B) | Win32.GetAsyncKeyState(0x5C)) & 0x8000) != 0;
-        bool caps = (Win32.GetAsyncKeyState(0x14) & 0x8000) != 0;
-
-        return _panelModifierKey switch
-        {
-            "Alt" => alt && !ctrl,
-            "Win" => win && !ctrl && !alt,
-            "CapsLock" => caps && !ctrl && !alt,
-            _ => ctrl && !alt,
-        };
-    }
-
-    private string PanelModifierDisplayName => _panelModifierKey switch
-    {
-        "Alt" => "Alt",
-        "Win" => "Win",
-        "CapsLock" => "CapsLk",
-        _ => "Ctrl",
-    };
 
     private void UpdateFooterHints()
     {
