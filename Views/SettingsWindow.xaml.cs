@@ -46,6 +46,7 @@ public partial class SettingsWindow : Window
     private bool _isRecordingPageScrollDownHotkey;
     private string _pendingPasteSimulationMode = PasteSimulationModes.CtrlV;
     private bool _pendingPasteRequiresDoubleClick;
+    private bool _pendingReplaceSystemWinV;
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
 
@@ -159,6 +160,9 @@ public partial class SettingsWindow : Window
 
         _pendingBatchQueueAutoSwitchToNormalAfterQueueDone = settings.BatchQueueAutoSwitchToNormalAfterQueueDone;
         BatchQueueAutoNormalToggleText.Text = _pendingBatchQueueAutoSwitchToNormalAfterQueueDone ? "开启" : "关闭";
+
+        _pendingReplaceSystemWinV = settings.ReplaceSystemWinV;
+        ReplaceSystemWinVText.Text = _pendingReplaceSystemWinV ? "开启" : "关闭";
 
         CustomFileDialogStore.RulesChanged += OnCustomFileDialogRulesChanged;
         Closed += SettingsWindow_OnClosed;
@@ -575,6 +579,12 @@ public partial class SettingsWindow : Window
         CheckUpdateOnStartupText.Text = _pendingCheckUpdatesOnStartup ? "开启" : "关闭";
     }
 
+    private void ReplaceSystemWinV_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingReplaceSystemWinV = !_pendingReplaceSystemWinV;
+        ReplaceSystemWinVText.Text = _pendingReplaceSystemWinV ? "开启" : "关闭";
+    }
+
     private void ShellInjectCycle_Click(object sender, RoutedEventArgs e)
     {
         _pendingEnableShellNavigateInject = !_pendingEnableShellNavigateInject;
@@ -786,6 +796,7 @@ public partial class SettingsWindow : Window
         _settings.RunAtStartup = _pendingRunAtStartup;
         _settings.RunAsAdministrator = _pendingRunAsAdministrator;
         _settings.CheckUpdatesOnStartup = _pendingCheckUpdatesOnStartup;
+        _settings.ReplaceSystemWinV = _pendingReplaceSystemWinV;
         _settings.EnableShellNavigateInject = _pendingEnableShellNavigateInject;
         _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(_pendingFileJumpFollowMode);
         _settings.FileJumpPickerOpenWhenDialogForeground = _pendingFileJumpOpenListOnDialogOpen;

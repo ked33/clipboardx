@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-06
+
+### Win+V 替换系统剪贴板历史
+
+- **替换系统 Win+V**（默认关闭）：设置 → 剪贴板 →「替换系统 Win+V」；开启后按 **Win+V** 打开 ClipboardX 而不是系统剪贴板历史
+- **实现机制**：启用时通过注册表禁用系统剪贴板历史（`HKCU\Software\Microsoft\Clipboard\EnableClipboardHistory`），退出时自动恢复；WH_KEYBOARD_LL 钩子拦截 Win+V 按键并触发 ClipboardX 弹窗
+
+### 代码重构
+
+- **PopupWindow 拆分**：键盘钩子逻辑拆至 `PopupWindow.KeyboardHook.cs`，鼠标钩子逻辑拆至 `PopupWindow.MouseHook.cs`；`PopupWindow.xaml.cs` 从 6848 行减至约 5160 行
+- **App 拆分**：托盘图标逻辑拆至 `App.TrayIcon.cs`；`App.xaml.cs` 从 849 行减至约 675 行
+
+### 清理
+
+- 删除调试日志 `debug-241056.log` 和补丁文件 `my_changes.patch`
+- `.gitignore` 增加 `debug-*.log` 和 `*.patch` 规则
+
 ## [1.5.3] - 2026-04-24
 
 ### 剪贴板 · 历史文本就地编辑

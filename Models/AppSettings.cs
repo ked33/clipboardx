@@ -81,6 +81,9 @@ public class AppSettings
     /// <summary>启动后静默访问 GitHub Releases，若有新版本则在托盘气泡提示（不弹阻断窗）。</summary>
     public bool CheckUpdatesOnStartup { get; set; } = true;
 
+    /// <summary>用 ClipboardX 替换系统 Win+V 快捷键（拦截系统剪贴板历史，触发 ClipboardX 弹窗）。</summary>
+    public bool ReplaceSystemWinV { get; set; } = false;
+
     /// <summary>启动检测已提示过的发行 tag（如 v1.2.0），避免同一版本重复气泡；升级或已最新时会清空。</summary>
     public string? LastStartupUpdateNotifiedTag { get; set; }
     public int PreviewMaxLines { get; set; } = 2;
@@ -440,6 +443,7 @@ public class AppSettings
         RunAsAdministrator = RunAsAdministrator,
         PasteSimulationMode = PasteSimulationMode,
         CheckUpdatesOnStartup = CheckUpdatesOnStartup,
+        ReplaceSystemWinV = ReplaceSystemWinV,
         LastStartupUpdateNotifiedTag = LastStartupUpdateNotifiedTag,
         PreviewMaxLines = PreviewMaxLines,
         PopupPanelWidth = PopupPanelWidth,
