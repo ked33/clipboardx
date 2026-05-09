@@ -379,8 +379,16 @@ public partial class FileDialogJumpPickerWindow : Window
         var owner = s_jumpPickerOwnerDestroyOwner;
         if (owner == null) return;
         if (owner._suppressDismissForSubDialog) return;
-        if (idObject != Win32.OBJID_WINDOW || idChild != 0) return;
-        if (owner._fileDialogOwnerHwnd == IntPtr.Zero || hwnd == owner._fileDialogOwnerHwnd || !Win32.IsWindow(owner._fileDialogOwnerHwnd))
+        if (owner._fileDialogOwnerHwnd == IntPtr.Zero)
+        {
+            owner._ownerDestroyHook = IntPtr.Zero;
+            owner.Dispatcher.BeginInvoke(() =>
+            {
+                try { owner.Close(); } catch { }
+            });
+            return;
+        }
+        if (hwnd == owner._fileDialogOwnerHwnd || !Win32.IsWindow(owner._fileDialogOwnerHwnd))
         {
             owner._ownerDestroyHook = IntPtr.Zero;
             owner.Dispatcher.BeginInvoke(() =>

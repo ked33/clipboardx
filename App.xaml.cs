@@ -725,7 +725,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        // 退出时恢复系统剪贴板历史（如果曾禁用）
+        AppSettings.FlushPendingSave();
+
         if (_settings.ReplaceSystemWinV)
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(true);
 

@@ -175,6 +175,8 @@ public partial class PopupWindow : Window
     private readonly ClipboardHistoryStore _historyStore = new();
     private AppSettings? _appSettings;
     private IntPtr _lastForegroundForDialogTrack = IntPtr.Zero;
+    private long _lastFileDialogSeenTick;
+    private const int FileDialogAliveWindowMs = 2000;
     /// <summary>前台切换风暴时合并到单次 UI 回调，避免关闭跳转列表时 Dispatcher 队列爆炸。</summary>
     private int _foregroundChangeCoalesceGen;
     /// <summary>自上次 UI 处理以来，原生 WinEvent 前台回调次数（合并前）。</summary>
@@ -3266,6 +3268,22 @@ public partial class PopupWindow : Window
         var prev = _lastForegroundForDialogTrack;
         _lastForegroundForDialogTrack = hwnd;
 
+        if (_activeFileJumpPicker != null && hwnd != new WindowInteropHelper(_activeFileJumpPicker).Handle)
+        {
+            var ownerHwnd = _activeFileJumpPicker.OwnerDialogHwnd;
+            if (ownerHwnd == IntPtr.Zero || !Win32.IsWindow(ownerHwnd))
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (_activeFileJumpPicker != null)
+                    {
+                        try { _activeFileJumpPicker.Close(); } catch { }
+                        _activeFileJumpPicker = null;
+                    }
+                }, DispatcherPriority.Send);
+            }
+        }
+
         int seq = Interlocked.Increment(ref _foregroundChangeCoalesceGen);
         var prevCap = prev;
         var hwndCap = hwnd;
@@ -3290,16 +3308,20 @@ public partial class PopupWindow : Window
     private void ProcessForegroundChangedUi(IntPtr prev, IntPtr hwnd, int nativeBurst, int supersededDispatches)
     {
         var sw = Stopwatch.StartNew();
-        TryRememberFolderFromDialog(prev);
-        TryRememberExternalManagerFolder(prev);
-        TryRememberExternalManagerFolder(hwnd);
 
-        // 列表已开时前台常在列表↔文件框间跳：勿重复快照 / 自动弹 / 切回同步（减少定时器与 STA 采集叠压）。
+        if (_activeFileJumpPicker == null)
+        {
+            TryRememberFolderFromDialog(prev);
+            TryRememberExternalManagerFolder(prev);
+            TryRememberExternalManagerFolder(hwnd);
+        }
+
         if (_activeFileJumpPicker == null)
         {
             var dialogForForeground = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
             if (dialogForForeground != IntPtr.Zero)
             {
+                _lastFileDialogSeenTick = Environment.TickCount64;
                 var prevForAutoSync = prev;
                 ScheduleSnapshotFolderFromDialog(dialogForForeground);
                 if (_appSettings != null)
@@ -3321,20 +3343,7 @@ public partial class PopupWindow : Window
         else
         {
             var dlgPick = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
-            var armPick = dlgPick != IntPtr.Zero
-                ? dlgPick
-                : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
-            UpdateFileJumpClickToNavigateArm(armPick != IntPtr.Zero ? armPick : hwnd);
-
-            if (_activeFileJumpPicker != null && dlgPick == IntPtr.Zero && hwnd != new WindowInteropHelper(_activeFileJumpPicker).Handle)
-            {
-                var ownerHwnd = _activeFileJumpPicker.OwnerDialogHwnd;
-                if (ownerHwnd == IntPtr.Zero || !Win32.IsWindow(ownerHwnd))
-                {
-                    _activeFileJumpPicker.Close();
-                    _activeFileJumpPicker = null;
-                }
-            }
+            UpdateFileJumpClickToNavigateArm(dlgPick != IntPtr.Zero ? dlgPick : hwnd);
         }
 
         var shouldHidePopup = _isPopupVisible

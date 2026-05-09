@@ -289,12 +289,16 @@ public partial class PopupWindow : Window
             && _appSettings != null
             && wParam.ToInt32() == Win32.WM_LBUTTONDOWN)
         {
-            var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-            if (FileDialogConfirmClick.TryResolveDialogOnPrimaryConfirmClick(info.pt, out var dialogHwnd))
+            var sinceLastDialog = Environment.TickCount64 - _lastFileDialogSeenTick;
+            if (sinceLastDialog < FileDialogAliveWindowMs && sinceLastDialog >= 0)
             {
-                var dlgCapture = dialogHwnd;
-                Dispatcher.BeginInvoke(new Action(() => TryPersistRecentFolderAfterPrimaryClick(dlgCapture)),
-                    DispatcherPriority.Send);
+                var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
+                if (FileDialogConfirmClick.TryResolveDialogOnPrimaryConfirmClick(info.pt, out var dialogHwnd))
+                {
+                    var dlgCapture = dialogHwnd;
+                    Dispatcher.BeginInvoke(new Action(() => TryPersistRecentFolderAfterPrimaryClick(dlgCapture)),
+                        DispatcherPriority.Send);
+                }
             }
         }
 
