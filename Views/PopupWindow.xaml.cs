@@ -3325,6 +3325,16 @@ public partial class PopupWindow : Window
                 ? dlgPick
                 : FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
             UpdateFileJumpClickToNavigateArm(armPick != IntPtr.Zero ? armPick : hwnd);
+
+            if (_activeFileJumpPicker != null && dlgPick == IntPtr.Zero && hwnd != new WindowInteropHelper(_activeFileJumpPicker).Handle)
+            {
+                var ownerHwnd = _activeFileJumpPicker.OwnerDialogHwnd;
+                if (ownerHwnd == IntPtr.Zero || !Win32.IsWindow(ownerHwnd))
+                {
+                    _activeFileJumpPicker.Close();
+                    _activeFileJumpPicker = null;
+                }
+            }
         }
 
         var shouldHidePopup = _isPopupVisible
@@ -3416,19 +3426,21 @@ public partial class PopupWindow : Window
     private void RememberLastDialogFolder(string folder)
     {
         if (_appSettings == null) return;
-        _appSettings.PushRecentFileDialogFolder(folder);
+        _appSettings.RecordFolderConfirmation(folder);
     }
 
     private static List<string>? CopyRecentForJump(AppSettings? settings)
     {
         if (settings?.RecentFileDialogFolders == null || settings.RecentFileDialogFolders.Count == 0)
             return null;
+        var maxCount = settings.RecentFolderMaxCount;
+        if (maxCount < 1) maxCount = 5;
         var list = new List<string>();
         foreach (var p in settings.RecentFileDialogFolders)
         {
             if (string.IsNullOrWhiteSpace(p)) continue;
             list.Add(p.Trim());
-            if (list.Count >= 3) break;
+            if (list.Count >= maxCount) break;
         }
 
         return list.Count > 0 ? list : null;

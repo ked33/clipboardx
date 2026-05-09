@@ -84,6 +84,8 @@
                             <MenuItem x:Name="CtxAddFavorite" Header="⭐ 加入收藏" Click="CtxAddFavorite_Click"/>
                             <MenuItem x:Name="CtxRemoveFavorite" Header="移除收藏" Click="CtxRemoveFavorite_Click"/>
                             <MenuItem x:Name="CtxEditPhrase" Header="✎ 修改关键词…" Click="CtxEditPhrase_Click"/>
+                            <Separator/>
+                            <MenuItem x:Name="CtxRemoveRecentFolder" Header="移除常用路径" Click="CtxRemoveRecentFolder_Click"/>
                         </ContextMenu>
                     </ListBox.ContextMenu>
                     <ListBox.ItemTemplate>
@@ -105,7 +107,8 @@
                                                                    HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                    FontSizeOverride="12"
                                                                    UseMutedBase="True"/>
-                                    <local:SearchHighlightTextBlock DisplayText="{Binding PathLine}"
+                                    <local:SearchHighlightTextBlock DisplayText="{Binding PathLineTruncated}"
+                                                                   ToolTip="{Binding PathLine}"
                                                                    HighlightQuery="{Binding HighlightSearchQuery, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                    FontSizeOverride="13"
                                                                    UseMutedBase="False"/>

@@ -123,6 +123,9 @@ public partial class SettingsWindow : Window
         _pendingFileJumpPickerEverythingFolderSearch = settings.FileJumpPickerEverythingFolderSearch;
         FileJumpEverythingFolderText.Text = _pendingFileJumpPickerEverythingFolderSearch ? "开启" : "关闭";
 
+        RecentFolderMaxCountBox.Text = settings.RecentFolderMaxCount.ToString();
+        RecentFolderAutoAddMinCountBox.Text = settings.RecentFolderAutoAddMinCount.ToString();
+
 #if CLIPX_FILEJUMP
         _pendingExplorerEverythingQuickFind = settings.ExplorerEverythingQuickFindEnabled;
         ExplorerEverythingQuickFindText.Text = _pendingExplorerEverythingQuickFind ? "开启" : "关闭";
@@ -781,6 +784,20 @@ public partial class SettingsWindow : Window
         }
 #endif
 
+        if (!int.TryParse(RecentFolderMaxCountBox.Text, out var recentMaxCount) || recentMaxCount < 1 || recentMaxCount > 10)
+        {
+            System.Windows.MessageBox.Show("常用路径最大数量应在 1 ~ 10 之间", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!int.TryParse(RecentFolderAutoAddMinCountBox.Text, out var recentAutoAddMin) || recentAutoAddMin < 1 || recentAutoAddMin > 100)
+        {
+            System.Windows.MessageBox.Show("自动加入常用路径阈值应在 1 ~ 100 之间", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         _settings.MaxItems = maxItems;
         _settings.HotkeyModifiers = _pendingModifiers;
         _settings.HotkeyKey = _pendingKey;
@@ -804,6 +821,8 @@ public partial class SettingsWindow : Window
         _settings.FileJumpAutoOnFirstClick = _pendingFileJumpAutoNavigateBest;
         _settings.FileJumpAutoSyncOnReturn = _pendingFileJumpAutoSyncOnReturn;
         _settings.FileJumpPickerEverythingFolderSearch = _pendingFileJumpPickerEverythingFolderSearch;
+        _settings.RecentFolderMaxCount = recentMaxCount;
+        _settings.RecentFolderAutoAddMinCount = recentAutoAddMin;
 #if CLIPX_FILEJUMP
         _settings.ExplorerEverythingQuickFindEnabled = _pendingExplorerEverythingQuickFind;
         _settings.ExplorerEverythingQuickFindMaxResults = explorerEvMax;

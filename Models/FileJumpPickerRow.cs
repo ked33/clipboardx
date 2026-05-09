@@ -43,12 +43,27 @@ public sealed class FileJumpPickerRow : INotifyPropertyChanged
 
     public string PathLine => Path;
 
+    public string PathLineTruncated => TruncatePathMiddle(Path);
+
     public string? SubInfo => IsFavorite && !string.IsNullOrEmpty(Phrase) ? $"⚡ {Phrase}" : null;
 
     public Visibility SubInfoVisibility => string.IsNullOrEmpty(SubInfo) ? Visibility.Collapsed : Visibility.Visible;
 
     public string SearchablePrimary =>
         $"{Phrase} {SourceLabel} {Path}";
+
+    private static string TruncatePathMiddle(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return path;
+
+        const int totalWidth = 50;
+        const int tailLen = 18;
+        const int headLen = totalWidth - 1 - tailLen;
+
+        if (path.Length <= totalWidth) return path;
+
+        return path[..headLen] + "…" + path[^tailLen..];
+    }
 
     private string? _pinyinCacheKey;
     private string? _pinyinBlob;

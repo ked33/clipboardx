@@ -176,7 +176,6 @@ internal static class FileManagerPathCollector
                 var idx = 1;
                 foreach (var raw in recentFolders)
                 {
-                    if (idx > 3) break;
                     if (string.IsNullOrWhiteSpace(raw))
                         continue;
                     Add($"常用路径{idx}", raw.Trim());

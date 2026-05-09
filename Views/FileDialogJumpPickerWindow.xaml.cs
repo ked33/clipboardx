@@ -29,12 +29,14 @@ public partial class FileDialogJumpPickerWindow : Window
     private static readonly Win32.LowLevelMouseProc s_jumpPickerMouseThunk = StaticJumpPickerMouseHook;
     private static readonly Win32.WinEventDelegate s_jumpPickerWinEventThunk = StaticJumpPickerWinEventProc;
     private static readonly Win32.WinEventDelegate s_jumpPickerDockWinEventThunk = StaticJumpPickerDockWinEventProc;
+    private static readonly Win32.WinEventDelegate s_jumpPickerOwnerDestroyThunk = StaticJumpPickerOwnerDestroyProc;
     private static IntPtr s_jumpPickerKbHookForNext;
     private static FileDialogJumpPickerWindow? s_jumpPickerKbOwner;
     private static IntPtr s_jumpPickerMouseHookForNext;
     private static FileDialogJumpPickerWindow? s_jumpPickerMouseOwner;
     private static FileDialogJumpPickerWindow? s_jumpPickerWinEventOwner;
     private static FileDialogJumpPickerWindow? s_jumpPickerDockWinEventOwner;
+    private static FileDialogJumpPickerWindow? s_jumpPickerOwnerDestroyOwner;
 
     private readonly IntPtr _fileDialogOwnerHwnd;
     private readonly int _mouseScreenX;
@@ -59,6 +61,7 @@ public partial class FileDialogJumpPickerWindow : Window
     private bool _suppressDismissForSubDialog;
 
     private IntPtr _jumpPickerWinEventHook;
+    private IntPtr _ownerDestroyHook;
 
     private DispatcherTimer? _dockFollowTimer;
     private IntPtr _dockOwnerMoveSizeHook;
@@ -200,6 +203,7 @@ public partial class FileDialogJumpPickerWindow : Window
         UninstallDockOwnerFollowHooks();
         UninstallKeyboardHook();
         UninstallJumpPickerOutsideHooks();
+        UninstallOwnerDestroyHook();
         if (_hwnd != IntPtr.Zero)
         {
             try
@@ -366,6 +370,45 @@ public partial class FileDialogJumpPickerWindow : Window
         var owner = s_jumpPickerDockWinEventOwner;
         if (owner != null)
             owner.JumpPickerDockMoveSizeCallback(eventType, hwnd, idObject, idChild);
+    }
+
+    private static void StaticJumpPickerOwnerDestroyProc(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        var owner = s_jumpPickerOwnerDestroyOwner;
+        if (owner == null) return;
+        if (owner._suppressDismissForSubDialog) return;
+        if (idObject != Win32.OBJID_WINDOW || idChild != 0) return;
+        if (owner._fileDialogOwnerHwnd == IntPtr.Zero || hwnd == owner._fileDialogOwnerHwnd || !Win32.IsWindow(owner._fileDialogOwnerHwnd))
+        {
+            owner._ownerDestroyHook = IntPtr.Zero;
+            owner.Dispatcher.BeginInvoke(() =>
+            {
+                try { owner.Close(); } catch { }
+            });
+        }
+    }
+
+    private void InstallOwnerDestroyHook()
+    {
+        if (_fileDialogOwnerHwnd == IntPtr.Zero) return;
+        s_jumpPickerOwnerDestroyOwner = this;
+        _ownerDestroyHook = Win32.SetWinEventHook(
+            Win32.EVENT_OBJECT_DESTROY, Win32.EVENT_OBJECT_DESTROY,
+            IntPtr.Zero, s_jumpPickerOwnerDestroyThunk,
+            0, 0,
+            Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+    }
+
+    private void UninstallOwnerDestroyHook()
+    {
+        s_jumpPickerOwnerDestroyOwner = null;
+        if (_ownerDestroyHook != IntPtr.Zero)
+        {
+            try { Win32.UnhookWinEvent(_ownerDestroyHook); } catch { }
+            _ownerDestroyHook = IntPtr.Zero;
+        }
     }
 
     private IntPtr JumpPickerMouseHookProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -1007,6 +1050,9 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         if (_snappedPhysicalOnce) return;
         _snappedPhysicalOnce = true;
+
+        InstallOwnerDestroyHook();
+
         var swTotal = Stopwatch.StartNew();
 
         try
@@ -1405,6 +1451,7 @@ public partial class FileDialogJumpPickerWindow : Window
         CtxAddFavorite.Visibility = row is { IsFavorite: false } ? Visibility.Visible : Visibility.Collapsed;
         CtxRemoveFavorite.Visibility = row is { IsFavorite: true } ? Visibility.Visible : Visibility.Collapsed;
         CtxEditPhrase.Visibility = row is { IsFavorite: true } ? Visibility.Visible : Visibility.Collapsed;
+        CtxRemoveRecentFolder.Visibility = row is { IsFavorite: false } && row.SourceLabel.StartsWith("常用路径") ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void CtxAddFavorite_Click(object sender, RoutedEventArgs e)
@@ -1451,6 +1498,14 @@ public partial class FileDialogJumpPickerWindow : Window
         RefreshFilter();
         var i = _displayRows.ToList().FindIndex(r => string.Equals(r.Path, row.Path, StringComparison.OrdinalIgnoreCase));
         if (i >= 0) ItemsList.SelectedIndex = i;
+    }
+
+    private void CtxRemoveRecentFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (ItemsList.SelectedItem is not FileJumpPickerRow row || row.IsFavorite) return;
+        _settings.RemoveRecentFileDialogFolder(row.Path);
+        BuildMasterList();
+        RefreshFilter();
     }
 
     private static string GuessPhraseFromPath(string path)

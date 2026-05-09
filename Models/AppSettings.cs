@@ -133,10 +133,58 @@ public class AppSettings
     /// <summary>最近一次在「打开/保存」对话框中记录到的文件夹（与 <see cref="RecentFileDialogFolders"/> 首项同步），供兼容旧逻辑。</summary>
     public string LastFileDialogFolder { get; set; } = "";
 
-    /// <summary>最近通过「确定/打开/保存」等确认操作记录的路径，最多 3 条（新的在前）。</summary>
+    /// <summary>最近通过「确定/打开/保存」等确认操作记录的路径，最多 <see cref="RecentFolderMaxCount"/> 条（新的在前）。</summary>
     public List<string> RecentFileDialogFolders { get; set; } = new();
 
-    /// <summary>在公共对话框内确认当前目录后加入常用列表（去重、LRU、最多 3 条），并同步 <see cref="LastFileDialogFolder"/> 后保存。</summary>
+    /// <summary>常用路径最大显示数量（默认 5）。</summary>
+    public int RecentFolderMaxCount { get; set; } = 5;
+
+    /// <summary>自动加入常用路径的最小确认次数阈值（默认 1）。</summary>
+    public int RecentFolderAutoAddMinCount { get; set; } = 1;
+
+    /// <summary>各文件夹的确认次数统计（key=归一化路径，value=累计次数）。未达阈值时仅计数，达阈值后才写入 <see cref="RecentFileDialogFolders"/>。</summary>
+    public Dictionary<string, int> FolderConfirmCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>在公共对话框内确认当前目录时调用：递增该路径计数，达到阈值后才写入常用列表。</summary>
+    public void RecordFolderConfirmation(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return;
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(folder.Trim());
+        }
+        catch
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Directory.Exists(normalized)) return;
+        }
+        catch
+        {
+            return;
+        }
+
+        if (IsApplicationInstallDirectory(normalized)) return;
+
+        FolderConfirmCounts ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        FolderConfirmCounts.TryGetValue(normalized, out var count);
+        count++;
+        FolderConfirmCounts[normalized] = count;
+
+        if (count < RecentFolderAutoAddMinCount)
+        {
+            Save();
+            return;
+        }
+
+        PushToRecentFileDialogFolders(normalized);
+    }
+
+    /// <summary>直接将路径写入常用列表（跳过阈值检查），供手动添加或迁移等场景使用。</summary>
     public void PushRecentFileDialogFolder(string folder)
     {
         if (string.IsNullOrWhiteSpace(folder)) return;
@@ -159,6 +207,13 @@ public class AppSettings
             return;
         }
 
+        if (IsApplicationInstallDirectory(normalized)) return;
+
+        PushToRecentFileDialogFolders(normalized);
+    }
+
+    private void PushToRecentFileDialogFolders(string normalized)
+    {
         RecentFileDialogFolders ??= new List<string>();
         RecentFileDialogFolders.RemoveAll(p =>
         {
@@ -173,8 +228,58 @@ public class AppSettings
             }
         });
         RecentFileDialogFolders.Insert(0, normalized);
-        while (RecentFileDialogFolders.Count > 3)
+        while (RecentFileDialogFolders.Count > RecentFolderMaxCount)
             RecentFileDialogFolders.RemoveAt(RecentFileDialogFolders.Count - 1);
+
+        LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
+        Save();
+    }
+
+    private static bool IsApplicationInstallDirectory(string path)
+    {
+        try
+        {
+            var programDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "ClipboardX");
+            var programDirFull = Path.GetFullPath(programDir);
+            var pathFull = Path.GetFullPath(path);
+            return string.Equals(pathFull, programDirFull, StringComparison.OrdinalIgnoreCase) ||
+                   pathFull.StartsWith(programDirFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>从常用路径列表中移除指定路径并保存。</summary>
+    public void RemoveRecentFileDialogFolder(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return;
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(folder.Trim());
+        }
+        catch
+        {
+            return;
+        }
+
+        RecentFileDialogFolders ??= new List<string>();
+        RecentFileDialogFolders.RemoveAll(p =>
+        {
+            if (string.IsNullOrWhiteSpace(p)) return true;
+            try
+            {
+                return string.Equals(Path.GetFullPath(p.Trim()), normalized, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        });
 
         LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
         Save();
@@ -309,8 +414,14 @@ public class AppSettings
                         settings.ExplorerEverythingQuickFindEnabled = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerEverythingFolderSearch), out _))
                         settings.FileJumpPickerEverythingFolderSearch = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(RecentFolderMaxCount), out _))
+                        settings.RecentFolderMaxCount = 5;
+                    if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
+                        settings.RecentFolderAutoAddMinCount = 1;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
+                    if (settings.FolderConfirmCounts == null)
+                        settings.FolderConfirmCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                     MigrateRecentFileDialogFolders(settings);
                     settings.PasteSimulationMode = PasteSimulationModes.Normalize(settings.PasteSimulationMode);
                     NormalizePopupPanelSettings(settings);
@@ -365,8 +476,14 @@ public class AppSettings
                         settings.ExplorerEverythingQuickFindEnabled = true;
                     if (!doc.RootElement.TryGetProperty(nameof(FileJumpPickerEverythingFolderSearch), out _))
                         settings.FileJumpPickerEverythingFolderSearch = true;
+                    if (!doc.RootElement.TryGetProperty(nameof(RecentFolderMaxCount), out _))
+                        settings.RecentFolderMaxCount = 5;
+                    if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
+                        settings.RecentFolderAutoAddMinCount = 1;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
+                    if (settings.FolderConfirmCounts == null)
+                        settings.FolderConfirmCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                     MigrateRecentFileDialogFolders(settings);
                     settings.PasteSimulationMode = PasteSimulationModes.Normalize(settings.PasteSimulationMode);
                     NormalizePopupPanelSettings(settings);
@@ -463,6 +580,11 @@ public class AppSettings
         FolderFavorites = FolderFavorites.Select(f => new FolderFavoriteEntry { Phrase = f.Phrase, Path = f.Path }).ToList(),
         LastFileDialogFolder = LastFileDialogFolder,
         RecentFileDialogFolders = RecentFileDialogFolders.ToList(),
+        RecentFolderMaxCount = RecentFolderMaxCount,
+        RecentFolderAutoAddMinCount = RecentFolderAutoAddMinCount,
+        FolderConfirmCounts = FolderConfirmCounts != null
+            ? new Dictionary<string, int>(FolderConfirmCounts, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
         ExplorerEverythingQuickFindEnabled = ExplorerEverythingQuickFindEnabled,
         ExplorerEverythingQuickFindMaxResults = ExplorerEverythingQuickFindMaxResults,
         FileJumpPickerEverythingFolderSearch = FileJumpPickerEverythingFolderSearch,

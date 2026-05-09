@@ -629,6 +629,10 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="10" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="10" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="10" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="12" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
@@ -771,6 +775,30 @@
                             <TextBlock x:Name="FileJumpEverythingFolderText" Foreground="{DynamicResource PrimaryText}" FontSize="14"
                                        HorizontalAlignment="Center" />
                         </Border>
+
+                        <StackPanel Grid.Row="18" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Background="Transparent" Padding="0,4" ToolTip="常用路径列表最多显示的条目数（1～10）；新确认的路径会插入列表头部，超出时丢弃最旧条目。">
+                                <TextBlock Text="常用路径最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            </Border>
+                        </StackPanel>
+                        <TextBox x:Name="RecentFolderMaxCountBox" Grid.Row="18" Grid.Column="1"
+                                 HorizontalAlignment="Right" Width="140"
+                                 FontSize="14" Padding="8,6"
+                                 ToolTip="常用路径列表最多显示的条目数（1～10）；新确认的路径会插入列表头部，超出时丢弃最旧条目。"
+                                 Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
+                                 BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
+
+                        <StackPanel Grid.Row="20" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Background="Transparent" Padding="0,4" ToolTip="在文件对话框中确认（打开/保存）多少次后，该路径才会自动加入常用路径列表（默认 1）。">
+                                <TextBlock Text="自动加入常用路径阈值" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            </Border>
+                        </StackPanel>
+                        <TextBox x:Name="RecentFolderAutoAddMinCountBox" Grid.Row="20" Grid.Column="1"
+                                 HorizontalAlignment="Right" Width="140"
+                                 FontSize="14" Padding="8,6"
+                                 ToolTip="在文件对话框中确认（打开/保存）多少次后，该路径才会自动加入常用路径列表（默认 1）。"
+                                 Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
+                                 BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
                     </Grid>
                 </ScrollViewer>
             </TabItem>
