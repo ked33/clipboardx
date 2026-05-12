@@ -423,6 +423,7 @@ public sealed class ExplorerQuickFindController : IDisposable
             return;
         }
         _window = new ExplorerQuickFindWindow();
+        _window.ApplySettings(_settings);
         _window.UserClosed += OnWindowClosed;
         _window.ItemActivated += OnItemActivated;
         _window.Show();

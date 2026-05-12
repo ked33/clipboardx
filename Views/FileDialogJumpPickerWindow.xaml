@@ -4,13 +4,14 @@
         xmlns:local="clr-namespace:ClipboardManager"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="Transparent"
+        Background="#01000000"
         ShowInTaskbar="False"
         Topmost="True"
-        ResizeMode="NoResize"
+        ResizeMode="CanResize"
         WindowStartupLocation="Manual"
         Width="520"
-        MinWidth="400"
+        MinWidth="280"
+        MinHeight="200"
         SizeToContent="Height"
         MaxHeight="560"
         ShowActivated="True"
@@ -132,5 +133,12 @@
                 </Border>
             </Grid>
         </Border>
+    <!-- 右下角 resize grip 指示器 -->
+    <Canvas Width="14" Height="14"
+            HorizontalAlignment="Right" VerticalAlignment="Bottom"
+            Margin="0,0,14,14" IsHitTestVisible="False" Opacity="0.25">
+        <Line X1="3" Y1="11" X2="11" Y2="3" Stroke="{DynamicResource SecondaryText}" StrokeThickness="1"/>
+        <Line X1="7" Y1="11" X2="11" Y2="7" Stroke="{DynamicResource SecondaryText}" StrokeThickness="1"/>
+    </Canvas>
     </Grid>
 </Window>

@@ -94,6 +94,27 @@ public class AppSettings
     /// <summary>剪贴板弹窗最大高度（DIP，列表区域随内容增高直至该上限）。</summary>
     public double PopupPanelMaxHeight { get; set; } = 560;
 
+    /// <summary>剪贴板弹窗实际高度（DIP），0 表示未手动调整过，使用 SizeToContent。</summary>
+    public double PopupPanelHeight { get; set; }
+
+    /// <summary>文件跳转弹窗宽度（DIP），默认 520。</summary>
+    public double FileJumpPickerWidth { get; set; } = 520;
+
+    /// <summary>文件跳转弹窗最大高度（DIP），默认 560。</summary>
+    public double FileJumpPickerMaxHeight { get; set; } = 560;
+
+    /// <summary>文件跳转弹窗实际高度（DIP），0 表示未手动调整过。</summary>
+    public double FileJumpPickerHeight { get; set; }
+
+    /// <summary>资源管理器快速筛选弹窗宽度（DIP），默认 540。</summary>
+    public double ExplorerQuickFindWidth { get; set; } = 540;
+
+    /// <summary>资源管理器快速筛选弹窗最大高度（DIP），默认 520。</summary>
+    public double ExplorerQuickFindMaxHeight { get; set; } = 520;
+
+    /// <summary>资源管理器快速筛选弹窗实际高度（DIP），0 表示未手动调整过。</summary>
+    public double ExplorerQuickFindHeight { get; set; }
+
     /// <summary>列表每次翻过的条目数（PgUp/Dn、←→ 及翻页快捷键共用，原固定为 8）。</summary>
     public int PopupPageItems { get; set; } = 8;
 
@@ -335,6 +356,20 @@ public class AppSettings
             s.PopupPanelWidth = 420;
         if (s.PopupPanelMaxHeight < 200 || s.PopupPanelMaxHeight > 900 || double.IsNaN(s.PopupPanelMaxHeight))
             s.PopupPanelMaxHeight = 560;
+        if (s.PopupPanelHeight < 0 || double.IsNaN(s.PopupPanelHeight))
+            s.PopupPanelHeight = 0;
+        if (s.FileJumpPickerWidth < 280 || s.FileJumpPickerWidth > 1200 || double.IsNaN(s.FileJumpPickerWidth))
+            s.FileJumpPickerWidth = 520;
+        if (s.FileJumpPickerMaxHeight < 200 || s.FileJumpPickerMaxHeight > 900 || double.IsNaN(s.FileJumpPickerMaxHeight))
+            s.FileJumpPickerMaxHeight = 560;
+        if (s.FileJumpPickerHeight < 0 || double.IsNaN(s.FileJumpPickerHeight))
+            s.FileJumpPickerHeight = 0;
+        if (s.ExplorerQuickFindWidth < 280 || s.ExplorerQuickFindWidth > 1200 || double.IsNaN(s.ExplorerQuickFindWidth))
+            s.ExplorerQuickFindWidth = 540;
+        if (s.ExplorerQuickFindMaxHeight < 200 || s.ExplorerQuickFindMaxHeight > 900 || double.IsNaN(s.ExplorerQuickFindMaxHeight))
+            s.ExplorerQuickFindMaxHeight = 520;
+        if (s.ExplorerQuickFindHeight < 0 || double.IsNaN(s.ExplorerQuickFindHeight))
+            s.ExplorerQuickFindHeight = 0;
         if (s.PopupPageItems < 1 || s.PopupPageItems > 50)
             s.PopupPageItems = 8;
         if (s.PanelPageScrollUpModifiers == 0)
@@ -635,6 +670,13 @@ public class AppSettings
         PreviewMaxLines = PreviewMaxLines,
         PopupPanelWidth = PopupPanelWidth,
         PopupPanelMaxHeight = PopupPanelMaxHeight,
+        PopupPanelHeight = PopupPanelHeight,
+        FileJumpPickerWidth = FileJumpPickerWidth,
+        FileJumpPickerMaxHeight = FileJumpPickerMaxHeight,
+        FileJumpPickerHeight = FileJumpPickerHeight,
+        ExplorerQuickFindWidth = ExplorerQuickFindWidth,
+        ExplorerQuickFindMaxHeight = ExplorerQuickFindMaxHeight,
+        ExplorerQuickFindHeight = ExplorerQuickFindHeight,
         PopupPageItems = PopupPageItems,
         PanelPageScrollUpModifiers = PanelPageScrollUpModifiers,
         PanelPageScrollUpKey = PanelPageScrollUpKey,

@@ -91,6 +91,8 @@ public partial class FileDialogJumpPickerWindow : Window
     private int _pendingPhysY;
     private bool _snappedPhysicalOnce;
     private string _searchText = "";
+    private bool _userHasResized;
+    private bool _isResizing;
 
     /// <summary>列表内搜索高亮绑定用：当前检索词（Trim）。</summary>
     public static readonly DependencyProperty HighlightSearchQueryProperty = DependencyProperty.Register(
@@ -155,6 +157,14 @@ public partial class FileDialogJumpPickerWindow : Window
         _collectorSnapshot = collectorItems.ToList();
 
         InitializeComponent();
+        Width = settings.FileJumpPickerWidth;
+        MaxHeight = settings.FileJumpPickerMaxHeight;
+        if (settings.FileJumpPickerHeight > 0)
+        {
+            _userHasResized = true;
+            SizeToContent = SizeToContent.Manual;
+            Height = settings.FileJumpPickerHeight;
+        }
         Opacity = 0;
         ItemsList.ItemsSource = _displayRows;
         FileJumpHintText.Text = autoForegroundStickyMode
@@ -190,6 +200,14 @@ public partial class FileDialogJumpPickerWindow : Window
 
     private void FileDialogJumpPickerWindow_Closed(object? sender, EventArgs e)
     {
+        if (_settings != null)
+        {
+            _settings.FileJumpPickerWidth = Width;
+            _settings.FileJumpPickerMaxHeight = MaxHeight;
+            if (_userHasResized && ActualHeight > 0)
+                _settings.FileJumpPickerHeight = ActualHeight;
+            _settings.Save();
+        }
         _everythingQueryCts?.Cancel();
         _everythingQueryCts = null;
         _dockFollowTimer?.Stop();
@@ -1023,11 +1041,61 @@ public partial class FileDialogJumpPickerWindow : Window
     {
         switch (msg)
         {
+            case Win32.WM_NCHITTEST:
+                var htResult = WindowResizeHelper.HandleNcHitTest(_hwnd, lParam, 16, ref handled);
+                if (handled) return htResult;
+                break;
+
+            case Win32.WM_SIZING:
+                if (WindowResizeHelper.HandleWmSizing(_hwnd, wParam, lParam,
+                    MinWidth > 0 ? MinWidth : 280, 1200,
+                    MinHeight > 0 ? MinHeight : 200, MaxHeight > 0 ? MaxHeight : 900,
+                    _userHasResized))
+                {
+                    _userHasResized = true;
+                    Dispatcher.BeginInvoke(() => SizeToContent = SizeToContent.Manual);
+                }
+                _isResizing = true;
+                var sizingRc = Marshal.PtrToStructure<Win32.RECT>(lParam);
+                Dispatcher.BeginInvoke(() =>
+                {
+                    var src = HwndSource.FromHwnd(_hwnd);
+                    double sx = src?.CompositionTarget != null ? src.CompositionTarget.TransformFromDevice.M11 : 1;
+                    double sy = src?.CompositionTarget != null ? src.CompositionTarget.TransformFromDevice.M22 : 1;
+                    double w = (sizingRc.Right - sizingRc.Left) * sx;
+                    double h = (sizingRc.Bottom - sizingRc.Top) * sy;
+                    if (w > 0 && h > 0)
+                    {
+                        Width = w;
+                        Height = h;
+                        MaxHeight = Math.Max(MaxHeight, h);
+                        UpdateDockPopupPhysicalSizeCache();
+                    }
+                });
+                handled = true;
+                return IntPtr.Zero;
+
+            case Win32.WM_ENTERSIZEMOVE:
+                _isResizing = true;
+                break;
+
+            case Win32.WM_EXITSIZEMOVE:
+                _isResizing = false;
+                if (_settings != null)
+                {
+                    _settings.FileJumpPickerWidth = Width;
+                    _settings.FileJumpPickerMaxHeight = MaxHeight;
+                    if (_userHasResized && ActualHeight > 0)
+                        _settings.FileJumpPickerHeight = ActualHeight;
+                    _settings.Save();
+                }
+                break;
+
             case Win32.WM_DPICHANGED:
                 _isOurSetWindowPosForPicker = false;
                 break;
             case Win32.WM_WINDOWPOSCHANGING:
-                if (!_isOurSetWindowPosForPicker && _lockJumpPickerNomove)
+                if (!_isOurSetWindowPosForPicker && !_isResizing && _lockJumpPickerNomove)
                 {
                     var pos = Marshal.PtrToStructure<Win32.WINDOWPOS>(lParam);
                     pos.flags |= Win32.SWP_NOMOVE;

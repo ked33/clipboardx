@@ -11,7 +11,7 @@
                     <Border x:Name="Bd"
                             Background="Transparent"
                             CornerRadius="8"
-                            Padding="12,9"
+                            Padding="10,5"
                             Margin="4,1"
                             BorderThickness="1"
                             BorderBrush="Transparent">

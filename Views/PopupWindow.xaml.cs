@@ -155,6 +155,8 @@ public partial class PopupWindow : Window
     private bool _hideOnSameAppClick = true;
     private string _panelModifierKey = "Ctrl";
     private bool _isDragging;
+    private bool _userHasResized;
+    private bool _isResizing;
     private Win32.POINT _dragLastPt;
     /// <summary>标题栏拖动时由鼠标钩 SetWindowPos 维护的 HWND 物理左上角；用于识别 Shell/贴靠对窗口的偷跑。</summary>
     private int _hookAuthPhysLeft, _hookAuthPhysTop;
@@ -418,6 +420,12 @@ public partial class PopupWindow : Window
         _panelPageScrollDownKey = settings.PanelPageScrollDownKey;
         Width = settings.PopupPanelWidth;
         MaxHeight = settings.PopupPanelMaxHeight;
+        if (settings.PopupPanelHeight > 0)
+        {
+            _userHasResized = true;
+            SizeToContent = SizeToContent.Manual;
+            Height = settings.PopupPanelHeight;
+        }
     }
 
     public void ApplySettings(AppSettings settings)
@@ -784,6 +792,48 @@ public partial class PopupWindow : Window
     {
         switch (msg)
         {
+            case Win32.WM_NCHITTEST:
+                var htResult = WindowResizeHelper.HandleNcHitTest(_hwnd, lParam, 16, ref handled);
+                if (handled) return htResult;
+                break;
+
+            case Win32.WM_SIZING:
+                if (WindowResizeHelper.HandleWmSizing(_hwnd, wParam, lParam,
+                    MinWidth > 0 ? MinWidth : 280, 1200,
+                    MinHeight > 0 ? MinHeight : 200, MaxHeight > 0 ? MaxHeight : 900,
+                    _userHasResized))
+                {
+                    _userHasResized = true;
+                    Dispatcher.BeginInvoke(() => SizeToContent = SizeToContent.Manual);
+                }
+                _isResizing = true;
+                var sizingRc = Marshal.PtrToStructure<Win32.RECT>(lParam);
+                Dispatcher.BeginInvoke(() =>
+                {
+                    var src = HwndSource.FromHwnd(_hwnd);
+                    double sx = src?.CompositionTarget != null ? src.CompositionTarget.TransformFromDevice.M11 : 1;
+                    double sy = src?.CompositionTarget != null ? src.CompositionTarget.TransformFromDevice.M22 : 1;
+                    double w = (sizingRc.Right - sizingRc.Left) * sx;
+                    double h = (sizingRc.Bottom - sizingRc.Top) * sy;
+                    if (w > 0 && h > 0)
+                    {
+                        Width = w;
+                        Height = h;
+                        MaxHeight = Math.Max(MaxHeight, h);
+                    }
+                });
+                handled = true;
+                return IntPtr.Zero;
+
+            case Win32.WM_ENTERSIZEMOVE:
+                _isResizing = true;
+                break;
+
+            case Win32.WM_EXITSIZEMOVE:
+                _isResizing = false;
+                SavePopupSize();
+                break;
+
             case Win32.WM_MOUSEACTIVATE:
                 handled = true;
                 return TextEntryEditPopup.IsOpen
@@ -844,7 +894,8 @@ public partial class PopupWindow : Window
                 }
 
                 // 外部发起的移动：弹窗常态锁位置；拖动时仅由钩子 SetWindowPos，禁止系统再改 x/y（尺寸仍可随 DPI 变）。
-                if (!_isOurSetWindowPos && (_isDragging || _isPopupVisible || _lockPopupWindowNomove))
+                // resize 时不能锁位置，否则拖左边缘时右边缘不动的约束会失效。
+                if (!_isOurSetWindowPos && !_isResizing && (_isDragging || _isPopupVisible || _lockPopupWindowNomove))
                 {
                     var pos = Marshal.PtrToStructure<Win32.WINDOWPOS>(lParam);
                     pos.flags |= Win32.SWP_NOMOVE;
@@ -2541,8 +2592,19 @@ public partial class PopupWindow : Window
         }
     }
 
+    private void SavePopupSize()
+    {
+        if (_appSettings == null) return;
+        _appSettings.PopupPanelWidth = Width;
+        _appSettings.PopupPanelMaxHeight = MaxHeight;
+        if (_userHasResized && ActualHeight > 0)
+            _appSettings.PopupPanelHeight = ActualHeight;
+        _appSettings.Save();
+    }
+
     private void HidePopup(bool closingViaClipboardHotkey = false)
     {
+        if (_isResizing) return;
         _swallowedMenuAltLatch = false;
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;
@@ -2594,6 +2656,7 @@ public partial class PopupWindow : Window
         else
             UninstallKeyboardHook();
 #endif
+        SavePopupSize();
         Hide();
     }
 
@@ -3347,6 +3410,7 @@ public partial class PopupWindow : Window
         }
 
         var shouldHidePopup = _isPopupVisible
+            && !_isResizing
             && hwnd != _hwnd
             && hwnd != _targetWindow;
         if (shouldHidePopup)
