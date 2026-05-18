@@ -249,7 +249,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="10" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="10" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="10" />
                             <RowDefinition Height="Auto" />
@@ -523,7 +523,7 @@
                                        HorizontalAlignment="Center" />
                         </Border>
 
-                        <Button Grid.Row="45" Grid.ColumnSpan="2" Content="🗑 清空所有历史记录"
+                        <Button Grid.Row="46" Grid.ColumnSpan="2" Content="🗑 清空所有历史记录"
                                 HorizontalAlignment="Left" VerticalAlignment="Top" Height="34" Padding="16,0"
                                 FontSize="13" Background="{DynamicResource DangerBg}" Foreground="White"
                                 BorderBrush="Transparent" Cursor="Hand" Click="ClearHistory_Click" />
