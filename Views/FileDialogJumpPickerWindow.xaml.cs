@@ -114,6 +114,8 @@ public partial class FileDialogJumpPickerWindow : Window
 
     /// <summary>粘性模式下点击导航后异步采集；新一次点击递增，过时回调丢弃。</summary>
     private int _commitNavigateKeepOpenGen;
+    private string _commitNavigateKeepOpenPath = "";
+    private long _commitNavigateKeepOpenUntilTick;
 
     private readonly List<FileJumpPickerRow> _masterRows = new();
     private readonly BulkObservableCollection<FileJumpPickerRow> _displayRows = new();
@@ -1933,6 +1935,19 @@ public partial class FileDialogJumpPickerWindow : Window
         return true;
     }
 
+    private static string NormalizeCommitNavigatePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        try
+        {
+            return Path.GetFullPath(path.Trim()).TrimEnd('\\', '/');
+        }
+        catch
+        {
+            return path.Trim().TrimEnd('\\', '/');
+        }
+    }
+
     /// <summary>
     /// 粘性模式下由外部触发：保持窗口打开，直接导航到目标路径并在完成后刷新列表。
     /// </summary>
@@ -1953,6 +1968,15 @@ public partial class FileDialogJumpPickerWindow : Window
     /// <summary>粘性自动模式：只切换文件对话框目录并刷新列表，不关闭窗口。</summary>
     private void CommitNavigateKeepOpen(string path)
     {
+        var normalizedPath = NormalizeCommitNavigatePath(path);
+        if (!string.IsNullOrEmpty(normalizedPath)
+            && _commitNavigateKeepOpenUntilTick != 0
+            && Environment.TickCount64 <= _commitNavigateKeepOpenUntilTick
+            && string.Equals(_commitNavigateKeepOpenPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _commitNavigateKeepOpenPath = normalizedPath;
+        _commitNavigateKeepOpenUntilTick = Environment.TickCount64 + 1500;
         unchecked { _commitNavigateKeepOpenGen++; }
         var gen = _commitNavigateKeepOpenGen;
         var dlgHwnd = _fileDialogOwnerHwnd;

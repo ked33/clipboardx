@@ -12,6 +12,7 @@ public partial class PopupWindow : Window
     private bool TryDispatchRegisteredAppHotkeyChordFromHook(uint vkCode)
     {
         if (_appSettings == null) return false;
+        if (IsForegroundAppExcluded(_appSettings)) return false;
 #if CLIPX_CLIPBOARD
         if (HotkeyChordMatches(_hotkeyModifiers) && vkCode == _hotkeyKey)
         {
@@ -180,6 +181,10 @@ public partial class PopupWindow : Window
     private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0)
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
+        // 排除列表中的应用：直接放行，不做任何拦截
+        if (IsForegroundAppExcluded(_appSettings))
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         var msg = wParam.ToInt32();

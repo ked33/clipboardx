@@ -49,6 +49,7 @@ public partial class SettingsWindow : Window
     private bool _pendingPasteRequiresDoubleClick;
     private bool _pendingReplaceSystemWinV;
     private bool _pendingClearHistoryOnExit;
+    private List<string> _pendingExclusionApps = new();
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
 
@@ -173,6 +174,9 @@ public partial class SettingsWindow : Window
 
         _pendingClearHistoryOnExit = settings.ClearHistoryOnExit;
         ClearHistoryOnExitText.Text = _pendingClearHistoryOnExit ? "开启" : "关闭";
+
+        _pendingExclusionApps = settings.ExclusionApps.ToList();
+        ReloadExclusionAppsList();
 
         CustomFileDialogStore.RulesChanged += OnCustomFileDialogRulesChanged;
         Closed += SettingsWindow_OnClosed;
@@ -601,6 +605,178 @@ public partial class SettingsWindow : Window
         ClearHistoryOnExitText.Text = _pendingClearHistoryOnExit ? "开启" : "关闭";
     }
 
+    private void ReloadExclusionAppsList()
+    {
+        ExclusionAppsList.Items.Clear();
+        foreach (var app in _pendingExclusionApps)
+            ExclusionAppsList.Items.Add(app);
+    }
+
+    private void ExclusionAppAdd_Click(object sender, RoutedEventArgs e)
+    {
+        var brush1 = (System.Windows.Media.Brush)FindResource("WindowBgBrush");
+        var brush2 = (System.Windows.Media.Brush)FindResource("SurfaceBrush");
+        var brush3 = (System.Windows.Media.Brush)FindResource("PrimaryText");
+        var brush4 = (System.Windows.Media.Brush)FindResource("ThemeBorder");
+
+        var dialog = new System.Windows.Window
+        {
+            Title = "添加排除应用",
+            Width = 400,
+            Height = 450,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = System.Windows.ResizeMode.NoResize,
+            Background = brush1
+        };
+
+        var grid = new System.Windows.Controls.Grid { Margin = new Thickness(12) };
+        grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = System.Windows.GridLength.Auto });
+        grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new System.Windows.GridLength(8) });
+        grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new System.Windows.GridLength(1, System.Windows.GridUnitType.Star) });
+        grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new System.Windows.GridLength(8) });
+        grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = System.Windows.GridLength.Auto });
+
+        var searchLabel = new System.Windows.Controls.TextBlock
+        {
+            Text = "搜索进程名…",
+            Foreground = brush3, Opacity = 0.4,
+            VerticalAlignment = System.Windows.VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsHitTestVisible = false
+        };
+        var searchBox = new System.Windows.Controls.TextBox
+        {
+            Background = brush2, Foreground = brush3, BorderBrush = brush4,
+            Padding = new Thickness(6, 4, 6, 4)
+        };
+        var searchPlaceholder = new System.Windows.Controls.Border
+        {
+            Background = System.Windows.Media.Brushes.Transparent,
+            Child = searchLabel,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0),
+            IsHitTestVisible = false
+        };
+        var searchHost = new System.Windows.Controls.Grid();
+        searchHost.Children.Add(searchBox);
+        searchHost.Children.Add(searchPlaceholder);
+        System.Windows.Controls.Grid.SetRow(searchHost, 0);
+        System.Windows.Controls.Grid.SetRow(searchBox, 0);
+
+        var processList = new System.Windows.Controls.ListBox
+        {
+            Background = brush2, Foreground = brush3, BorderBrush = brush4,
+            BorderThickness = new Thickness(1)
+        };
+        System.Windows.Controls.Grid.SetRow(processList, 2);
+
+        var btnPanel = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+        var okButton = new System.Windows.Controls.Button
+        {
+            Content = "添加选中", Padding = new Thickness(16, 4, 16, 4), MinWidth = 90,
+            Background = brush2, Foreground = brush3, BorderBrush = brush4, IsEnabled = false
+        };
+        var cancelButton = new System.Windows.Controls.Button
+        {
+            Content = "关闭", Padding = new Thickness(16, 4, 16, 4), MinWidth = 80,
+            Margin = new Thickness(8, 0, 0, 0),
+            Background = brush2, Foreground = brush3, BorderBrush = brush4
+        };
+        btnPanel.Children.Add(okButton);
+        btnPanel.Children.Add(cancelButton);
+        System.Windows.Controls.Grid.SetRow(btnPanel, 4);
+
+        grid.Children.Add(searchHost);
+        grid.Children.Add(processList);
+        grid.Children.Add(btnPanel);
+        dialog.Content = grid;
+
+        // 水印显隐
+        searchBox.TextChanged += (_, _) =>
+        {
+            searchPlaceholder.Visibility = string.IsNullOrEmpty(searchBox.Text)
+                ? System.Windows.Visibility.Visible
+                : System.Windows.Visibility.Collapsed;
+        };
+
+        // 获取当前运行进程（去重、排除自身和系统进程）
+        var selfPid = Environment.ProcessId;
+        var processes = System.Diagnostics.Process.GetProcesses()
+            .Where(p =>
+            {
+                try { return p.Id != selfPid && !string.IsNullOrEmpty(p.ProcessName) && p.Id > 4; }
+                catch { return false; }
+            })
+            .Select(p =>
+            {
+                try { return p.ProcessName; }
+                catch { return ""; }
+            })
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        void RefreshList(string? filter)
+        {
+            processList.Items.Clear();
+            var filtered = string.IsNullOrEmpty(filter)
+                ? processes
+                : processes.Where(n => n.Contains(filter!, StringComparison.OrdinalIgnoreCase)).ToList();
+            foreach (var n in filtered)
+                processList.Items.Add(n);
+        }
+        RefreshList(null);
+
+        searchBox.TextChanged += (_, _) => RefreshList(searchBox.Text?.Trim());
+        processList.SelectionChanged += (_, _) => okButton.IsEnabled = processList.SelectedItem != null;
+
+        void AddSelected()
+        {
+            if (processList.SelectedItem is string name
+                && !_pendingExclusionApps.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                _pendingExclusionApps.Add(name);
+                ReloadExclusionAppsList();
+            }
+        }
+
+        okButton.Click += (_, _) => { AddSelected(); searchBox.Clear(); searchBox.Focus(); };
+        cancelButton.Click += (_, _) => { dialog.DialogResult = false; };
+
+        dialog.PreviewKeyDown += (_, ev) =>
+        {
+            if (ev.Key == System.Windows.Input.Key.Return && processList.SelectedItem != null)
+            {
+                AddSelected();
+                searchBox.Clear();
+                searchBox.Focus();
+                ev.Handled = true;
+            }
+            else if (ev.Key == System.Windows.Input.Key.Escape)
+            {
+                dialog.DialogResult = false;
+                ev.Handled = true;
+            }
+        };
+
+        dialog.ShowDialog();
+    }
+
+    private void ExclusionAppDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (ExclusionAppsList.SelectedItem is string selected)
+        {
+            _pendingExclusionApps.RemoveAll(a => string.Equals(a, selected, StringComparison.OrdinalIgnoreCase));
+            ReloadExclusionAppsList();
+        }
+    }
+
     private void ShellInjectCycle_Click(object sender, RoutedEventArgs e)
     {
         _pendingEnableShellNavigateInject = !_pendingEnableShellNavigateInject;
@@ -836,6 +1012,7 @@ public partial class SettingsWindow : Window
         _settings.CheckUpdatesOnStartup = _pendingCheckUpdatesOnStartup;
         _settings.ReplaceSystemWinV = _pendingReplaceSystemWinV;
         _settings.ClearHistoryOnExit = _pendingClearHistoryOnExit;
+        _settings.ExclusionApps = _pendingExclusionApps.ToList();
         _settings.EnableShellNavigateInject = _pendingEnableShellNavigateInject;
         _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(_pendingFileJumpFollowMode);
         _settings.FileJumpPickerOpenWhenDialogForeground = _pendingFileJumpOpenListOnDialogOpen;

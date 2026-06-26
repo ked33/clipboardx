@@ -232,6 +232,8 @@ public partial class PopupWindow : Window
     private int _fileJumpPickerSession;
     private DispatcherTimer? _fileJumpOpenDelayTimer;
     private DispatcherTimer? _fileJumpAutoOpenDebounceTimer;
+    private IntPtr _fileJumpAutoOpenRetryRoot;
+    private int _fileJumpAutoOpenRetryCount;
     private int _fileJumpDelaySession;
     /// <summary>「对话框到前台自动执行」路径采集异步化，避免与 UI 线程争抢；递增后过时结果丢弃。</summary>
     private int _fileJumpAutoForegroundCollectGen;
@@ -270,6 +272,9 @@ public partial class PopupWindow : Window
     private System.Windows.Threading.DispatcherTimer? _explorerPathPollTimer;
     private string _explorerPathPollLastPath = "";
     private IntPtr _explorerPathPollHwnd;
+    private IntPtr _fileJumpNavigationSuppressRoot;
+    private string _fileJumpNavigationSuppressPath = "";
+    private long _fileJumpNavigationSuppressUntilTick;
 
     public event Action? SettingsRequested;
 
@@ -919,6 +924,7 @@ public partial class PopupWindow : Window
                 break;
 #endif
             case Win32.WM_HOTKEY:
+                if (IsForegroundAppExcluded(_appSettings)) break;
                 switch (wParam.ToInt32())
                 {
 #if CLIPX_CLIPBOARD
@@ -2575,6 +2581,25 @@ public partial class PopupWindow : Window
         || name.Equals("ShellHost", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// 当前前台进程是否在排除列表中；若匹配则应跳过 ClipboardX 全局快捷键。
+    /// </summary>
+    internal static bool IsForegroundAppExcluded(AppSettings? settings)
+    {
+        if (settings == null || settings.ExclusionApps.Count == 0) return false;
+        var fg = Win32.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        Win32.GetWindowThreadProcessId(fg, out uint pid);
+        if (pid == 0) return false;
+        try
+        {
+            using var proc = Process.GetProcessById((int)pid);
+            var name = proc.ProcessName;
+            return settings.ExclusionApps.Contains(name, StringComparer.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
     /// 尽力将本窗口插在 Shell 根窗口之上并重申 TOPMOST。Win11 25H2 等版本可能将开始/搜索置于更高 Z 带，
     /// 此时用户态无法保证显示在最前。
     /// </summary>
@@ -3399,7 +3424,8 @@ public partial class PopupWindow : Window
                 _lastFileDialogSeenTick = Environment.TickCount64;
                 var prevForAutoSync = prev;
                 ScheduleSnapshotFolderFromDialog(dialogForForeground);
-                if (_appSettings != null)
+                var navigationSuppressed = IsFileJumpNavigationSuppressed(dialogForForeground);
+                if (_appSettings != null && !navigationSuppressed)
                 {
                     if (_appSettings.FileJumpPickerOpenWhenDialogForeground)
                         TryAutoOpenFileJumpPickerWhenDialogForeground(dialogForForeground);
@@ -3407,7 +3433,8 @@ public partial class PopupWindow : Window
                         TryAutoNavigateBestPathWhenDialogForeground(dialogForForeground);
                 }
 
-                TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync);
+                if (!navigationSuppressed)
+                    TryAutoSyncPathOnDialogReturn(hwnd, prevForAutoSync);
             }
 
             var armTarget = dialogForForeground != IntPtr.Zero
@@ -3422,7 +3449,10 @@ public partial class PopupWindow : Window
 
             // picker 打开时切回文件对话框 → 触发 auto-sync
             if (dialogForForeground != IntPtr.Zero)
-                TryAutoSyncPathOnDialogReturn(hwnd, prev);
+            {
+                if (!IsFileJumpNavigationSuppressed(dialogForForeground))
+                    TryAutoSyncPathOnDialogReturn(hwnd, prev);
+            }
             // picker 打开时切到外部管理器 → 触发采集刷新列表（新 Explorer 路径会被加入候选）
             else if (dialogForForeground == IntPtr.Zero && _activeFileJumpPicker != null)
                 TryRefreshPickerForNewExternalFolder(hwnd);
@@ -3790,9 +3820,10 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>在后台 STA 线程执行文件对话框导航，避免 Thread.Sleep 阻塞 UI 线程。</summary>
-    private static void NavigateToFolderInBackground(IntPtr dialogHwnd, string path, bool allowShellInject,
+    private void NavigateToFolderInBackground(IntPtr dialogHwnd, string path, bool allowShellInject,
         Action<bool>? onCompleted = null)
     {
+        MarkFileJumpNavigationSuppressed(dialogHwnd, path);
         var th = new Thread(() =>
         {
             try
@@ -4080,6 +4111,32 @@ public partial class PopupWindow : Window
         _fileJumpAutoOpenDebounceTimer.Start();
     }
 
+    private void ScheduleAutoOpenFileJumpPickerRetry(IntPtr dialogHwnd, IntPtr dialogRoot)
+    {
+        if (dialogHwnd == IntPtr.Zero || dialogRoot == IntPtr.Zero) return;
+        if (_fileJumpAutoOpenRetryRoot != dialogRoot)
+        {
+            _fileJumpAutoOpenRetryRoot = dialogRoot;
+            _fileJumpAutoOpenRetryCount = 0;
+        }
+        if (_fileJumpAutoOpenRetryCount >= 2) return;
+
+        _fileJumpAutoOpenRetryCount++;
+        _fileJumpAutoOpenDebounceTimer?.Stop();
+        _fileJumpAutoOpenDebounceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(_fileJumpAutoOpenRetryCount == 1 ? 160 : 260)
+        };
+        var capturedDialog = dialogHwnd;
+        _fileJumpAutoOpenDebounceTimer.Tick += (_, _) =>
+        {
+            _fileJumpAutoOpenDebounceTimer?.Stop();
+            _fileJumpAutoOpenDebounceTimer = null;
+            TryAutoOpenFileJumpPickerWhenDialogForegroundAfterDebounce(capturedDialog);
+        };
+        _fileJumpAutoOpenDebounceTimer.Start();
+    }
+
     /// <summary>
     /// 对话框成为前台并经过短延时后：按设置自动弹出跳转列表或直跳最优路径（与 FileJumpPickerAutoPopup 一致，含仅 1 条候选）。
     /// </summary>
@@ -4097,12 +4154,19 @@ public partial class PopupWindow : Window
         var fgNow = Win32.GetForegroundWindow();
         var dialogHwnd = ResolveFileJumpTargetHwndInternal(fgNow);
         if (dialogHwnd == IntPtr.Zero) return;
+        if (IsFileJumpNavigationSuppressed(dialogHwnd)) return;
 
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRoot == IntPtr.Zero) return;
 
         if (!IsForegroundFocusOnFileDialogRoot(dialogRoot))
             return;
+
+        if (_fileJumpAutoOpenRetryRoot != dialogRoot)
+        {
+            _fileJumpAutoOpenRetryRoot = dialogRoot;
+            _fileJumpAutoOpenRetryCount = 0;
+        }
 
         if (dialogRoot == _fileJumpAutoOpenPickerDoneRoot)
             return;
@@ -4202,12 +4266,18 @@ public partial class PopupWindow : Window
         if (_fileJumpPickerOpenInProgress) return;
 
         if (!IsForegroundFocusOnFileDialogRoot(dialogRootNow)) return;
+        if (IsFileJumpNavigationSuppressed(dialogHwnd)) return;
 
         if (dialogRootNow == _fileJumpAutoOpenPickerDoneRoot) return;
 
         if (candidates.Count == 0)
+        {
+            ScheduleAutoOpenFileJumpPickerRetry(dialogHwnd, dialogRootNow);
             return;
+        }
 
+        _fileJumpAutoOpenRetryRoot = IntPtr.Zero;
+        _fileJumpAutoOpenRetryCount = 0;
         var prefer = PreferCandidateIndex(dialogHwnd, candidates);
         _fileJumpAutoOpenPickerDoneRoot = dialogRootNow;
 
@@ -4243,6 +4313,7 @@ public partial class PopupWindow : Window
         var fgNow = Win32.GetForegroundWindow();
         var dialogHwnd = ResolveFileJumpTargetHwndInternal(fgNow);
         if (dialogHwnd == IntPtr.Zero) return;
+        if (IsFileJumpNavigationSuppressed(dialogHwnd)) return;
 
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRoot == IntPtr.Zero) return;
@@ -4321,6 +4392,7 @@ public partial class PopupWindow : Window
         if (dialogHwnd == IntPtr.Zero) return;
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
         if (dialogRoot == IntPtr.Zero) return;
+        if (IsFileJumpNavigationSuppressed(dialogHwnd)) return;
 
         var hasMatchingPicker = ActivePickerMatchesDialog(dialogRoot);
         if (!hasMatchingPicker && !_appSettings.FileJumpAutoSyncOnReturn) return;
@@ -4459,6 +4531,8 @@ public partial class PopupWindow : Window
 
                     Dispatcher.BeginInvoke(() =>
                     {
+                        if (IsFileJumpNavigationSuppressed(capturedDialog, capturedPreferred))
+                            return;
                         if (TryNavigateViaActivePicker(capturedDialog, capturedRoot, capturedPreferred))
                             return;
                         ShellNavigateLog.Write("filejump",
@@ -4540,6 +4614,41 @@ public partial class PopupWindow : Window
     {
         if (string.IsNullOrWhiteSpace(path)) return "";
         return path.Trim().TrimEnd('\\', '/');
+    }
+
+    private void MarkFileJumpNavigationSuppressed(IntPtr dialogHwnd, string path)
+    {
+        var dialogRoot = dialogHwnd != IntPtr.Zero && Win32.IsWindow(dialogHwnd)
+            ? Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT)
+            : IntPtr.Zero;
+        _fileJumpNavigationSuppressRoot = dialogRoot;
+        _fileJumpNavigationSuppressPath = NormalizeFolderPathForCompare(path);
+        _fileJumpNavigationSuppressUntilTick = Environment.TickCount64 + 1500;
+    }
+
+    private bool IsFileJumpNavigationSuppressed(IntPtr dialogHwnd, string? path = null)
+    {
+        if (_fileJumpNavigationSuppressRoot == IntPtr.Zero)
+            return false;
+        if (_fileJumpNavigationSuppressUntilTick != 0
+            && Environment.TickCount64 > _fileJumpNavigationSuppressUntilTick)
+        {
+            _fileJumpNavigationSuppressRoot = IntPtr.Zero;
+            _fileJumpNavigationSuppressPath = "";
+            _fileJumpNavigationSuppressUntilTick = 0;
+            return false;
+        }
+        if (dialogHwnd == IntPtr.Zero || !Win32.IsWindow(dialogHwnd))
+            return false;
+
+        var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
+        if (dialogRoot == IntPtr.Zero || dialogRoot != _fileJumpNavigationSuppressRoot)
+            return false;
+
+        var normalizedPath = NormalizeFolderPathForCompare(path);
+        return string.IsNullOrEmpty(normalizedPath)
+            || string.IsNullOrEmpty(_fileJumpNavigationSuppressPath)
+            || string.Equals(normalizedPath, _fileJumpNavigationSuppressPath, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
@@ -4799,6 +4908,11 @@ public partial class PopupWindow : Window
             return;
         }
         var dialogRoot = Win32.GetAncestor(dialogHwnd, Win32.GA_ROOT);
+        if (IsFileJumpNavigationSuppressed(dialogHwnd))
+        {
+            DisarmFileJumpClickToNavigate();
+            return;
+        }
         if (dialogRoot != IntPtr.Zero
             && dialogRoot == _fileJumpAutoFirstJumpDoneRoot
             && Win32.IsWindow(dialogRoot))

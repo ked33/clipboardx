@@ -380,6 +380,7 @@ public partial class App : Application
             _settings.CheckUpdatesOnStartup = copy.CheckUpdatesOnStartup;
             _settings.ReplaceSystemWinV = copy.ReplaceSystemWinV;
             _settings.ClearHistoryOnExit = copy.ClearHistoryOnExit;
+            _settings.ExclusionApps = copy.ExclusionApps;
             // 启用/禁用系统剪贴板历史（Win+V）
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(!_settings.ReplaceSystemWinV);
             _settings.EnableShellNavigateInject = copy.EnableShellNavigateInject;
@@ -436,6 +437,7 @@ public partial class App : Application
     {
         if (_batchModeHotkeyHost != null) return;
         _batchModeHotkeyHost = new BatchModeCycleHotkeyHost();
+        _batchModeHotkeyHost.IsForegroundAppExcluded = () => PopupWindow.IsForegroundAppExcluded(_settings);
         _batchModeHotkeyHost.CycleRequested += () =>
             Dispatcher.BeginInvoke(new Action(() => _popup?.CycleBatchPasteMode()));
     }

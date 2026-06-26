@@ -9,11 +9,11 @@
         Topmost="True"
         ResizeMode="CanResize"
         WindowStartupLocation="Manual"
-        Width="520"
+        Width="500"
         MinWidth="280"
         MinHeight="200"
         SizeToContent="Height"
-        MaxHeight="560"
+        MaxHeight="620"
         ShowActivated="True"
         Title="ClipboardX — 跳转到文件夹">
 
@@ -89,7 +89,7 @@
                          BorderThickness="0"
                          FocusVisualStyle="{x:Null}"
                          Padding="4"
-                         MaxHeight="380"
+                         MaxHeight="440"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.ScrollChanged="ItemsList_ScrollChanged"
                          PreviewMouseLeftButtonUp="ItemsList_OnPreviewMouseLeftButtonUp"

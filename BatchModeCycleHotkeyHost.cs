@@ -14,6 +14,8 @@ internal sealed class BatchModeCycleHotkeyHost : NativeWindow
     public uint CurrentModifiers { get; private set; }
     public uint CurrentKey { get; private set; }
     public event Action? CycleRequested;
+    /// <summary>设置为 true 时，WndProc 在触发前跳过前台排除检查。</summary>
+    internal Func<bool>? IsForegroundAppExcluded { get; set; }
 
     public BatchModeCycleHotkeyHost()
     {
@@ -45,6 +47,7 @@ internal sealed class BatchModeCycleHotkeyHost : NativeWindow
     {
         if (m.Msg == Win32.WM_HOTKEY && m.WParam.ToInt32() == HotkeyId)
         {
+            if (IsForegroundAppExcluded?.Invoke() == true) return;
             CycleRequested?.Invoke();
             return;
         }

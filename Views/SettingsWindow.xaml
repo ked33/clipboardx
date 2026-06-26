@@ -898,6 +898,11 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="10" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="10" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -949,6 +954,30 @@
                                  ToolTip="everything（Everything IPC）单次最多返回条数（1～2000）。"
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
+
+                        <StackPanel Grid.Row="30" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                            <TextBlock Text="排除应用列表" FontSize="18" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource PrimaryText}" />
+                        </StackPanel>
+                        <TextBlock Grid.Row="32" Grid.ColumnSpan="2" Text="前台属于列表中的应用时，ClipboardX 全局快捷键不触发，解决与游戏、专业软件等的快捷键冲突"
+                                   Foreground="{DynamicResource PrimaryText}" FontSize="13" Opacity="0.85" TextWrapping="Wrap" />
+                        <ListBox x:Name="ExclusionAppsList" Grid.Row="34" Grid.ColumnSpan="2"
+                                 Foreground="{DynamicResource PrimaryText}"
+                                 Background="{DynamicResource SurfaceBrush}"
+                                 BorderBrush="{DynamicResource ThemeBorder}"
+                                 MinHeight="60" MaxHeight="150" />
+                        <StackPanel Grid.Row="36" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,4,0,0">
+                            <Button Content="添加进程名…" Padding="12,6" MinWidth="100"
+                                    Background="{DynamicResource SurfaceBrush}"
+                                    Foreground="{DynamicResource PrimaryText}"
+                                    BorderBrush="{DynamicResource ThemeBorder}"
+                                    Click="ExclusionAppAdd_Click" Cursor="Hand" />
+                            <Button Content="删除所选" Padding="12,6" MinWidth="100" Margin="8,0,0,0"
+                                    Background="{DynamicResource SurfaceBrush}"
+                                    Foreground="{DynamicResource PrimaryText}"
+                                    BorderBrush="{DynamicResource ThemeBorder}"
+                                    Click="ExclusionAppDelete_Click" Cursor="Hand" />
+                        </StackPanel>
                     </Grid>
                 </ScrollViewer>
             </TabItem>

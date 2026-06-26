@@ -100,11 +100,11 @@ public class AppSettings
     /// <summary>剪贴板弹窗实际高度（DIP），0 表示未手动调整过，使用 SizeToContent。</summary>
     public double PopupPanelHeight { get; set; }
 
-    /// <summary>文件跳转弹窗宽度（DIP），默认 520。</summary>
-    public double FileJumpPickerWidth { get; set; } = 520;
+    /// <summary>文件跳转弹窗宽度（DIP），默认 500。</summary>
+    public double FileJumpPickerWidth { get; set; } = 500;
 
-    /// <summary>文件跳转弹窗最大高度（DIP），默认 560。</summary>
-    public double FileJumpPickerMaxHeight { get; set; } = 560;
+    /// <summary>文件跳转弹窗最大高度（DIP），默认 620。</summary>
+    public double FileJumpPickerMaxHeight { get; set; } = 620;
 
     /// <summary>文件跳转弹窗实际高度（DIP），0 表示未手动调整过。</summary>
     public double FileJumpPickerHeight { get; set; }
@@ -165,6 +165,9 @@ public class AppSettings
 
     /// <summary>自动加入常用路径的最小确认次数阈值（默认 1）。</summary>
     public int RecentFolderAutoAddMinCount { get; set; } = 1;
+
+    /// <summary>排除应用列表：前台属于这些进程时不触发 ClipboardX 全局快捷键（进程名不含 .exe 后缀，不区分大小写）。</summary>
+    public List<string> ExclusionApps { get; set; } = new();
 
     /// <summary>各文件夹的确认次数统计（key=归一化路径，value=累计次数）。未达阈值时仅计数，达阈值后才写入 <see cref="RecentFileDialogFolders"/>。</summary>
     public Dictionary<string, int> FolderConfirmCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -551,6 +554,7 @@ public class AppSettings
     private static void MigrateRecentFileDialogFolders(AppSettings settings)
     {
         settings.RecentFileDialogFolders ??= new List<string>();
+        settings.ExclusionApps ??= new List<string>();
         settings.RecentFileDialogFolders.RemoveAll(string.IsNullOrWhiteSpace);
         if (settings.RecentFileDialogFolders.Count == 0 && !string.IsNullOrWhiteSpace(settings.LastFileDialogFolder))
         {
@@ -708,6 +712,7 @@ public class AppSettings
         ExplorerEverythingQuickFindMaxResults = ExplorerEverythingQuickFindMaxResults,
         FileJumpPickerEverythingFolderSearch = FileJumpPickerEverythingFolderSearch,
         UseFindXSearch = UseFindXSearch,
-        ExplorerQuickFindOpenMode = ExplorerQuickFindOpenMode
+        ExplorerQuickFindOpenMode = ExplorerQuickFindOpenMode,
+        ExclusionApps = ExclusionApps.ToList()
     };
 }

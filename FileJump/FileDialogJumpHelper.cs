@@ -752,6 +752,14 @@ internal static class FileDialogJumpHelper
         var path = NormalizeFolderPathForNavigation(folderPath);
         if (!Directory.Exists(path)) return false;
 
+        if (TryReadCurrentFolder(dialogHwnd, out var currentFolder, relaxed: true)
+            && PathsLooselyEqual(currentFolder, path))
+        {
+            ShellNavigateLog.Write("filejump",
+                $"skip navigate already at target path=\"{path}\" hwnd=0x{dialogHwnd.ToInt64():X}");
+            return true;
+        }
+
         var kind = ClassifyFileDialog(dialogHwnd);
         var customRule = kind == FileDialogKind.None
             ? CustomFileDialogStore.FindMatchingRule(dialogHwnd)
@@ -764,9 +772,20 @@ internal static class FileDialogJumpHelper
 
         // #32770 是标准 Shell 对话框，始终支持注入（包括 WPS 进程内弹出的浏览对话框）
         if (allowShellInject
-            && Win32.GetWindowClassName(dialogHwnd).Equals("#32770", StringComparison.Ordinal)
-            && ShellDialogDeepNavigate.TryBrowseObjectInject(dialogHwnd, path))
-            return true;
+            && Win32.GetWindowClassName(dialogHwnd).Equals("#32770", StringComparison.Ordinal))
+        {
+            if (ShellDialogDeepNavigate.TryBrowseObjectInject(dialogHwnd, path))
+                return true;
+
+            Thread.Sleep(80);
+            if (TryReadCurrentFolder(dialogHwnd, out var afterInject, relaxed: true)
+                && PathsLooselyEqual(afterInject, path))
+            {
+                ShellNavigateLog.Write("filejump",
+                    $"shell inject reached target despite failure status path=\"{path}\" hwnd=0x{dialogHwnd.ToInt64():X}");
+                return true;
+            }
+        }
 
         if (kind == FileDialogKind.SysListView)
             return TryNavigateSysListViewStyle(dialogHwnd, path);
