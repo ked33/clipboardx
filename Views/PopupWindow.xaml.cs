@@ -155,6 +155,8 @@ public partial class PopupWindow : Window
     private string _popupPosition = "Caret";
     private double _popupOpacity = 1.0;
     private bool _hideOnSameAppClick = true;
+    /// <summary>置顶：粘贴后不关窗，且不因点击外部/失焦自动关闭。</summary>
+    private bool _popupPinned;
     private string _panelModifierKey = "Ctrl";
     private bool _isDragging;
     private bool _userHasResized;
@@ -180,6 +182,7 @@ public partial class PopupWindow : Window
     private bool _lockPopupWindowNomove;
     private List<QuickPasteEntry> _quickPastes = new();
     private readonly ClipboardHistoryStore _historyStore = new();
+    private ImageOcrQueue? _imageOcrQueue;
     private AppSettings? _appSettings;
     private IntPtr _lastForegroundForDialogTrack = IntPtr.Zero;
     private long _lastFileDialogSeenTick;
@@ -314,6 +317,8 @@ public partial class PopupWindow : Window
 #if CLIPX_CLIPBOARD
         LoadHistoryFromStore();
         LoadQuickPastes();
+        _imageOcrQueue = new ImageOcrQueue(_historyStore, Dispatcher);
+        _imageOcrQueue.EnqueueBackfill(_allItems, settings, OnImageOcrEntryUpdated);
 #endif
         UpdateFooterHints();
 
@@ -457,6 +462,11 @@ public partial class PopupWindow : Window
         TrimItems();
         UpdateBatchHeaderUi();
 
+#if CLIPX_CLIPBOARD
+        if (settings.ImageOcrEnabled && _imageOcrQueue != null)
+            _imageOcrQueue.EnqueueBackfill(_allItems, settings, OnImageOcrEntryUpdated);
+#endif
+
         if (!settings.FileJumpAutoOnFirstClick)
         {
             _fileJumpAutoFirstJumpDoneRoot = IntPtr.Zero;
@@ -522,6 +532,12 @@ public partial class PopupWindow : Window
                 _allItems.Insert(0, batch[i]);
         }
         catch { /* ignore */ }
+    }
+
+    private void OnImageOcrEntryUpdated()
+    {
+        RefreshFilter();
+        SyncEntryPreviewWithSelection();
     }
 
     private void LoadQuickPastes()
@@ -1134,6 +1150,7 @@ public partial class PopupWindow : Window
                             TrimItems();
                             _historyStore.TryInsert(ie);
                             AutoBatchEnqueueIfNeeded(ie, fromClipboardMonitor: true);
+                            _imageOcrQueue?.Enqueue(ie, _appSettings, OnImageOcrEntryUpdated);
                             RefreshFilter();
                             ClipboardDiagnosticsLog.Write($"monitor history inserted image outBytes={pngData.Length}");
                         }
@@ -1858,7 +1875,8 @@ public partial class PopupWindow : Window
         SyncBatchPasteKeyboardHook();
         var mergeText = _appSettings?.BatchPasteMergeText ?? true;
         if (IsAllTextEntries(list) && mergeText)
-            await RunAllTextBatchSingleClipboardAsync(list, newlineAfterEachTextWhenCtrlEnter: false);
+            await RunAllTextBatchSingleClipboardAsync(list, newlineAfterEachTextWhenCtrlEnter: false,
+                hidePopupAfter: HidePopupAfterUserAction);
         else if (mergeText)
             await RunOrderedPastesWithAdjacentTextMergeAsync(list, newlineAfterEachTextWhenCtrlEnter: false);
         else
@@ -1892,6 +1910,32 @@ public partial class PopupWindow : Window
         PasteSelectedItem();
     }
 
+    /// <summary>单选图片且已有 OCR 文字时，粘贴纯文本而非图片。</summary>
+    private void HandleShiftEnterKey()
+    {
+        if (ItemsList.SelectedItems.Count == 1
+            && ItemsList.SelectedItem is ClipboardEntry entry
+            && entry.Type == EntryType.Image
+            && !string.IsNullOrWhiteSpace(entry.OcrText))
+        {
+            _ = PasteOcrTextFromImageAsync(entry);
+            return;
+        }
+        HandleMainEnterKey(false);
+    }
+
+    private async Task PasteOcrTextFromImageAsync(ClipboardEntry imageEntry)
+    {
+        if (imageEntry.Type != EntryType.Image || string.IsNullOrWhiteSpace(imageEntry.OcrText)) return;
+        var textOnly = new ClipboardEntry
+        {
+            Type = EntryType.Text,
+            TextContent = imageEntry.OcrText.Trim(),
+            IsQuickPaste = true
+        };
+        await PasteEntryAsync(textOnly, hidePopupAfter: HidePopupAfterUserAction);
+    }
+
     private async Task PasteBatchQueueHeadAsync()
     {
         if (_batchQueue.Count == 0) return;
@@ -1908,7 +1952,7 @@ public partial class PopupWindow : Window
         RefreshFilter(0);
         try
         {
-            await PasteEntryAsync(item, hidePopupAfter: true);
+            await PasteEntryAsync(item, hidePopupAfter: HidePopupAfterUserAction);
         }
         catch (Exception ex)
         {
@@ -1938,13 +1982,14 @@ public partial class PopupWindow : Window
         if (ordered.Count == 0) return;
         if (ordered.Count == 1)
         {
-            await PasteEntryAsync(ordered[0], hidePopupAfter: true);
+            await PasteEntryAsync(ordered[0], hidePopupAfter: HidePopupAfterUserAction);
             return;
         }
 
         var mergeText = _appSettings?.BatchPasteMergeText ?? true;
         if (IsAllTextEntries(ordered) && mergeText)
-            await RunAllTextBatchSingleClipboardAsync(ordered, newlineAfterEachTextWhenCtrlEnter);
+            await RunAllTextBatchSingleClipboardAsync(ordered, newlineAfterEachTextWhenCtrlEnter,
+                hidePopupAfter: HidePopupAfterUserAction);
         else if (mergeText)
             await RunOrderedPastesWithAdjacentTextMergeAsync(ordered, newlineAfterEachTextWhenCtrlEnter);
         else
@@ -1988,7 +2033,7 @@ public partial class PopupWindow : Window
         _sequentialPasteHold = true;
         // 批量入口立刻 Hide：每段自己 hidePopupAfter=isLast 会让前 N-1 段时面板仍前台，
         // SetForegroundWindowAggressive 抢回目标不可靠；先 Hide 让 Win32.SetForegroundWindow 直接成功。
-        if (_isPopupVisible) HidePopup();
+        if (_isPopupVisible && HidePopupAfterUserAction) HidePopup();
         try
         {
             var opIndex = 0;
@@ -2342,7 +2387,7 @@ public partial class PopupWindow : Window
     private async Task RunSequentialPastesAsync(IReadOnlyList<ClipboardEntry> items, bool newlineAfterEachTextWhenCtrlEnter = false)
     {
         _sequentialPasteHold = true;
-        if (_isPopupVisible) HidePopup();
+        if (_isPopupVisible && HidePopupAfterUserAction) HidePopup();
         try
         {
             for (int i = 0; i < items.Count; i++)
@@ -2418,6 +2463,9 @@ public partial class PopupWindow : Window
 
     private bool ShouldPreferBatchMenuOverItemContext() =>
         GetBatchMode() != BatchPasteQueueMode.Off || _batchQueue.Count > 0;
+
+    /// <summary>用户主动粘贴/批量粘贴后是否应关闭面板（置顶时保持打开）。</summary>
+    private bool HidePopupAfterUserAction => !_popupPinned;
 
     #endregion
 
@@ -2508,6 +2556,9 @@ public partial class PopupWindow : Window
 
         if (IsShellForegroundWindow(Win32.GetForegroundWindow()))
             ShellForegroundMayOccludePopup?.Invoke();
+
+        _popupPinned = false;
+        UpdatePinHeaderUi();
     }
 
     private void ApplyPendingPositionSetWindowPos()
@@ -2642,6 +2693,7 @@ public partial class PopupWindow : Window
     {
         if (_isResizing) return;
         _swallowedMenuAltLatch = false;
+        _popupPinned = false;
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;
         UninstallMouseHook();
@@ -3461,6 +3513,7 @@ public partial class PopupWindow : Window
         }
 
         var shouldHidePopup = _isPopupVisible
+            && !_popupPinned
             && !_isResizing
             && hwnd != _hwnd
             && hwnd != _targetWindow;
@@ -4980,6 +5033,7 @@ public partial class PopupWindow : Window
             ("Home/End", "首尾"),
             ("PgUp/Dn", "翻页"),
             ("Enter", "单条粘贴；有队列时先贴队首；普通+多选为顺序连贴；FIFO/LIFO+多选为入队；其它窗口 Ctrl+V 或 Shift+Insert 各出队一条；Ctrl+Enter 多选时每条文本末换行（仅普通连贴）"),
+            ("Shift+Enter", "单选图片时粘贴 OCR 识别文字（无文字则等同 Enter）"),
             ($"{m}+Tab", "仅看快捷短语（再按切换）"),
             ("Tab", "循环类型筛选"),
             ("a-z", "拼音搜索"),
@@ -5210,6 +5264,12 @@ public partial class PopupWindow : Window
         EntryPreviewImage.Visibility = Visibility.Collapsed;
         EntryPreviewImage.Source = null;
         EntryPreviewText.Text = "";
+        EntryPreviewImageMeta.Visibility = Visibility.Collapsed;
+        EntryPreviewImageMeta.Text = "";
+        EntryPreviewOcrSeparator.Visibility = Visibility.Collapsed;
+        EntryPreviewOcrHeader.Visibility = Visibility.Collapsed;
+        EntryPreviewOcrText.Visibility = Visibility.Collapsed;
+        EntryPreviewOcrText.Text = "";
 
         if (entry == null) return;
 
@@ -5224,18 +5284,51 @@ public partial class PopupWindow : Window
 
         if (entry.Type == EntryType.Image || entry.IsImageFile)
         {
+            var showedImage = false;
+            if (entry.Type == EntryType.Image)
+            {
+                EntryPreviewImageMeta.Text = $"{entry.ImageWidth}×{entry.ImageHeight} 图片";
+                EntryPreviewImageMeta.Visibility = Visibility.Visible;
+            }
+
             var bmp = LoadEntryPreviewBitmap(entry);
             if (bmp != null)
             {
                 EntryPreviewImage.Source = bmp;
                 EntryPreviewImage.Visibility = Visibility.Visible;
-                return;
+                showedImage = true;
             }
 
-            EntryPreviewText.Text = entry.Type == EntryType.Image
-                ? "（无法解码该图片）"
-                : string.Join(Environment.NewLine, entry.FilePaths ?? Array.Empty<string>());
-            EntryPreviewText.Visibility = Visibility.Visible;
+            if (entry.Type == EntryType.Image)
+            {
+                if (entry.IsOcrPending)
+                {
+                    EntryPreviewOcrSeparator.Visibility = showedImage ? Visibility.Visible : Visibility.Collapsed;
+                    EntryPreviewOcrHeader.Text = "识别文字";
+                    EntryPreviewOcrHeader.Visibility = Visibility.Visible;
+                    EntryPreviewOcrText.Text = "识别中，请稍候…";
+                    EntryPreviewOcrText.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                if (entry.HasOcrPreviewBody)
+                {
+                    EntryPreviewOcrSeparator.Visibility = showedImage ? Visibility.Visible : Visibility.Collapsed;
+                    EntryPreviewOcrHeader.Text = "识别文字";
+                    EntryPreviewOcrHeader.Visibility = Visibility.Visible;
+                    EntryPreviewOcrText.Text = entry.OcrPreviewBody;
+                    EntryPreviewOcrText.Visibility = Visibility.Visible;
+                    return;
+                }
+            }
+
+            if (!showedImage)
+            {
+                EntryPreviewText.Text = entry.Type == EntryType.Image
+                    ? "（无法解码该图片）"
+                    : string.Join(Environment.NewLine, entry.FilePaths ?? Array.Empty<string>());
+                EntryPreviewText.Visibility = Visibility.Visible;
+            }
             return;
         }
 
@@ -5488,7 +5581,7 @@ public partial class PopupWindow : Window
     private async void PasteSelectedItem()
     {
         if (ItemsList.SelectedItem is not ClipboardEntry item) return;
-        await PasteEntryAsync(item, hidePopupAfter: true);
+        await PasteEntryAsync(item, hidePopupAfter: HidePopupAfterUserAction);
     }
 
     /// <param name="sequentialSegmentIndex">≥0 表示连续粘贴中的第几段（无段间延时）；-1 表示单次粘贴（保留对焦/剪贴板/回波延时）。</param>
@@ -5823,7 +5916,8 @@ public partial class PopupWindow : Window
         ClipboardDiagnosticsLog.Write(
             $"pasteAsFile BEGIN {beginLogDetail} temp=\"{path}\" target=0x{_targetWindow.ToInt64():X}");
 
-        HidePopup();
+        if (HidePopupAfterUserAction)
+            HidePopup();
         if (_targetWindow != IntPtr.Zero)
             Win32.SetForegroundWindowAggressive(_targetWindow);
         await Task.Delay(85);
@@ -6117,6 +6211,10 @@ public partial class PopupWindow : Window
         CtxPasteAsFileBorder.Visibility = entry.Type == EntryType.Image
             ? Visibility.Visible
             : Visibility.Collapsed;
+        CtxPasteOcrTextBorder.Visibility = entry.Type == EntryType.Image
+                                             && !string.IsNullOrWhiteSpace(entry.OcrText)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         CtxPasteJsonFileBorder.Visibility = entry.Type == EntryType.Text && IsWellFormedJson(entry.TextContent)
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -6165,6 +6263,7 @@ public partial class PopupWindow : Window
         }
 
         Add(CtxPasteBorder, ActivateCtxPaste);
+        Add(CtxPasteOcrTextBorder, ActivateCtxPasteOcrText);
         Add(CtxPasteAsFileBorder, ActivateCtxPasteAsFile);
         Add(CtxPasteJsonFileBorder, ActivateCtxPasteJsonFile);
         Add(CtxEditTextBorder, ActivateCtxEditText);
@@ -6216,6 +6315,15 @@ public partial class PopupWindow : Window
         }
     }
 
+    private async void ActivateCtxPasteOcrText()
+    {
+        CloseContextMenuPopup();
+        if (_contextEntry is not { Type: EntryType.Image } entry) return;
+        if (string.IsNullOrWhiteSpace(entry.OcrText)) return;
+        ItemsList.SelectedItem = entry;
+        await PasteOcrTextFromImageAsync(entry);
+    }
+
     private void ActivateCtxPasteAsFile()
     {
         CloseContextMenuPopup();
@@ -6252,6 +6360,8 @@ public partial class PopupWindow : Window
     }
 
     private void CtxPaste_Click(object sender, MouseButtonEventArgs e) => ActivateCtxPaste();
+
+    private void CtxPasteOcrText_Click(object sender, MouseButtonEventArgs e) => ActivateCtxPasteOcrText();
 
     private void CtxPasteAsFile_Click(object sender, MouseButtonEventArgs e) => ActivateCtxPasteAsFile();
 
@@ -6345,6 +6455,27 @@ public partial class PopupWindow : Window
         int li = _displayItems.IndexOf(item);
         if (li >= 0) _mouseShiftAnchorIndex = li;
         PasteSelectedItem();
+    }
+
+    private void Pin_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        _popupPinned = !_popupPinned;
+        UpdatePinHeaderUi();
+    }
+
+    private void UpdatePinHeaderUi()
+    {
+        if (PinHeaderBorder == null || PinHeaderIcon == null) return;
+        PinHeaderBorder.Background = _popupPinned
+            ? (Brush)FindResource("BatchModeTagFill")
+            : System.Windows.Media.Brushes.Transparent;
+        PinHeaderIcon.Foreground = _popupPinned
+            ? (Brush)FindResource("BatchModeTagFg")
+            : (Brush)FindResource("SecondaryText");
+        PinHeaderBorder.ToolTip = _popupPinned
+            ? "已置顶：粘贴后保持窗口打开；再次点击取消或按 Esc 关闭"
+            : "置顶：粘贴后保持窗口打开，便于连续粘贴";
     }
 
     private void Settings_Click(object sender, MouseButtonEventArgs e)

@@ -1,0 +1,30 @@
+<Window x:Class="ClipboardManager.OcrInstallPromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="图片文字识别"
+        Width="440"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{DynamicResource PopupBgBrush}">
+    <Border Margin="20" Padding="4">
+        <StackPanel>
+            <TextBlock Text="需要 Windows OCR 语言组件"
+                       FontSize="16" FontWeight="SemiBold"
+                       Foreground="{DynamicResource PrimaryText}" Margin="0,0,0,10"/>
+            <TextBlock x:Name="BodyText" TextWrapping="Wrap" LineHeight="22"
+                       Foreground="{DynamicResource SecondaryText}" FontSize="13" Margin="0,0,0,16"/>
+            <TextBlock Text="仅需安装一次；安装完成后会自动继续识别图片中的文字。"
+                       TextWrapping="Wrap" Foreground="{DynamicResource MutedText}" FontSize="12" Margin="0,0,0,18"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="LaterBtn" Content="稍后" Width="72" Height="32" Margin="0,0,8,0"
+                        Click="LaterBtn_Click"/>
+                <Button x:Name="SettingsBtn" Content="打开系统设置" MinWidth="108" Height="32" Margin="0,0,8,0"
+                        Padding="12,0" Click="SettingsBtn_Click"/>
+                <Button x:Name="ElevatedBtn" Content="自动安装" MinWidth="88" Height="32"
+                        Padding="12,0" Click="ElevatedBtn_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

@@ -49,6 +49,7 @@ public partial class SettingsWindow : Window
     private bool _pendingPasteRequiresDoubleClick;
     private bool _pendingReplaceSystemWinV;
     private bool _pendingClearHistoryOnExit;
+    private bool _pendingImageOcrEnabled;
     private List<string> _pendingExclusionApps = new();
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
@@ -174,6 +175,9 @@ public partial class SettingsWindow : Window
 
         _pendingClearHistoryOnExit = settings.ClearHistoryOnExit;
         ClearHistoryOnExitText.Text = _pendingClearHistoryOnExit ? "开启" : "关闭";
+
+        _pendingImageOcrEnabled = settings.ImageOcrEnabled;
+        ImageOcrEnabledText.Text = _pendingImageOcrEnabled ? "开启" : "关闭";
 
         _pendingExclusionApps = settings.ExclusionApps.ToList();
         ReloadExclusionAppsList();
@@ -605,6 +609,12 @@ public partial class SettingsWindow : Window
         ClearHistoryOnExitText.Text = _pendingClearHistoryOnExit ? "开启" : "关闭";
     }
 
+    private void ImageOcrEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingImageOcrEnabled = !_pendingImageOcrEnabled;
+        ImageOcrEnabledText.Text = _pendingImageOcrEnabled ? "开启" : "关闭";
+    }
+
     private void ReloadExclusionAppsList()
     {
         ExclusionAppsList.Items.Clear();
@@ -1012,6 +1022,7 @@ public partial class SettingsWindow : Window
         _settings.CheckUpdatesOnStartup = _pendingCheckUpdatesOnStartup;
         _settings.ReplaceSystemWinV = _pendingReplaceSystemWinV;
         _settings.ClearHistoryOnExit = _pendingClearHistoryOnExit;
+        _settings.ImageOcrEnabled = _pendingImageOcrEnabled;
         _settings.ExclusionApps = _pendingExclusionApps.ToList();
         _settings.EnableShellNavigateInject = _pendingEnableShellNavigateInject;
         _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(_pendingFileJumpFollowMode);

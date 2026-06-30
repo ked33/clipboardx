@@ -53,6 +53,28 @@ internal sealed class ClipboardHistoryStore
             CREATE INDEX IF NOT EXISTS idx_clipboard_history_copied ON clipboard_history(copied_at_ms DESC);
             """;
         cmd.ExecuteNonQuery();
+        MigrateSchema(conn);
+    }
+
+    private static void MigrateSchema(SqliteConnection conn)
+    {
+        if (HasColumn(conn, "ocr_text")) return;
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "ALTER TABLE clipboard_history ADD COLUMN ocr_text TEXT";
+        cmd.ExecuteNonQuery();
+    }
+
+    private static bool HasColumn(SqliteConnection conn, string columnName)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(clipboard_history)";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            if (string.Equals(r.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private SqliteConnection Open()
@@ -77,7 +99,7 @@ internal sealed class ClipboardHistoryStore
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
                 """
-                SELECT id, entry_type, text_content, image_blob, image_w, image_h, file_paths_json, copied_at_ms
+                SELECT id, entry_type, text_content, image_blob, image_w, image_h, file_paths_json, copied_at_ms, ocr_text
                 FROM clipboard_history
                 ORDER BY copied_at_ms DESC
                 LIMIT @lim
@@ -138,6 +160,8 @@ internal sealed class ClipboardHistoryStore
             var json = r.GetString(6);
             entry.FilePaths = JsonSerializer.Deserialize<string[]>(json) ?? [];
         }
+        if (r.FieldCount > 8 && !r.IsDBNull(8))
+            entry.OcrText = r.GetString(8);
         return entry;
     }
 
@@ -227,6 +251,26 @@ internal sealed class ClipboardHistoryStore
             cmd.Parameters.AddWithValue("@t", text);
             cmd.Parameters.AddWithValue("@id", persistedId);
             cmd.Parameters.AddWithValue("@et", (int)EntryType.Text);
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    public void TryUpdateOcrText(long persistedId, string? ocrText)
+    {
+        if (persistedId <= 0) return;
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "UPDATE clipboard_history SET ocr_text = @ocr WHERE id = @id AND entry_type = @et";
+            cmd.Parameters.AddWithValue("@ocr", (object?)ocrText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@id", persistedId);
+            cmd.Parameters.AddWithValue("@et", (int)EntryType.Image);
             cmd.ExecuteNonQuery();
         }
         catch

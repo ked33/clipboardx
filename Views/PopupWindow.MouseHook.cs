@@ -271,7 +271,7 @@ public partial class PopupWindow : Window
                     Dispatcher.BeginInvoke(
                         System.Windows.Threading.DispatcherPriority.Background, () =>
                         {
-                            if (_isPopupVisible && !_clickReceivedByPopup
+                            if (_isPopupVisible && !_popupPinned && !_clickReceivedByPopup
                                 && !ContextPopup.IsOpen && !PhraseEditPopup.IsOpen && !TextEntryEditPopup.IsOpen)
                                 HidePopup();
                         });

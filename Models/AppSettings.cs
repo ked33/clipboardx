@@ -87,6 +87,9 @@ public class AppSettings
     /// <summary>退出时自动清空剪贴板历史记录（保留快捷短语）。</summary>
     public bool ClearHistoryOnExit { get; set; } = false;
 
+    /// <summary>复制图片后使用 Windows 内置 OCR 识别文字，便于搜索与列表预览。</summary>
+    public bool ImageOcrEnabled { get; set; } = true;
+
     /// <summary>启动检测已提示过的发行 tag（如 v1.2.0），避免同一版本重复气泡；升级或已最新时会清空。</summary>
     public string? LastStartupUpdateNotifiedTag { get; set; }
     public int PreviewMaxLines { get; set; } = 2;
@@ -677,6 +680,7 @@ public class AppSettings
         CheckUpdatesOnStartup = CheckUpdatesOnStartup,
         ReplaceSystemWinV = ReplaceSystemWinV,
         ClearHistoryOnExit = ClearHistoryOnExit,
+        ImageOcrEnabled = ImageOcrEnabled,
         LastStartupUpdateNotifiedTag = LastStartupUpdateNotifiedTag,
         PreviewMaxLines = PreviewMaxLines,
         PopupPanelWidth = PopupPanelWidth,

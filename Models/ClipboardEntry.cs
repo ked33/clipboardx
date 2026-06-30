@@ -38,6 +38,42 @@ public class ClipboardEntry : INotifyPropertyChanged
     public int ImageWidth { get; set; }
     public int ImageHeight { get; set; }
 
+    /// <summary>Windows OCR 识别出的图片内文字；空表示无文字或尚未识别。</summary>
+    public string? OcrText { get; set; }
+
+    private bool _isOcrPending;
+    /// <summary>后台 OCR 队列处理中。</summary>
+    public bool IsOcrPending
+    {
+        get => _isOcrPending;
+        set
+        {
+            if (_isOcrPending == value) return;
+            _isOcrPending = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsOcrPending)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubInfo)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasSubInfo)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubInfoVisibility)));
+        }
+    }
+
+    public void RaiseOcrDisplayPropertiesChanged()
+    {
+        _pinyinCacheKey = null;
+        _pinyinSearchBlob = null;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SearchableText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubInfo)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasSubInfo)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubInfoVisibility)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ImageMetaLine)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasImageMetaLine)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ImageMetaLineVisibility)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(OcrPreviewBody)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasOcrPreviewBody)));
+    }
+
     public bool IsQuickPaste { get; set; }
     public string? ShortcutPhrase { get; set; }
 
@@ -146,10 +182,52 @@ public class ClipboardEntry : INotifyPropertyChanged
     public string Preview => Type switch
     {
         EntryType.Text => TruncateText(TextContent, PreviewMaxLines, 200),
-        EntryType.Image => $"{ImageWidth}×{ImageHeight} 图片",
+        EntryType.Image => BuildImagePreview(),
         EntryType.Files => FormatFilePaths(),
         _ => ""
     };
+
+    private string BuildImagePreview()
+    {
+        if (!string.IsNullOrWhiteSpace(OcrText))
+            return TruncateText(NormalizeOcrDisplayText(OcrText), PreviewMaxLines, 160);
+        if (IsOcrPending)
+            return "识别文字中…";
+        return $"{ImageWidth}×{ImageHeight} 图片";
+    }
+
+    /// <summary>列表副行：尺寸、识别状态等元信息。</summary>
+    public string? ImageMetaLine
+    {
+        get
+        {
+            if (Type != EntryType.Image) return null;
+            var dim = $"{ImageWidth}×{ImageHeight}";
+            if (IsOcrPending) return $"{dim} · 识别中";
+            if (!string.IsNullOrWhiteSpace(OcrText)) return $"{dim} · 图片";
+            return null;
+        }
+    }
+
+    public bool HasImageMetaLine => ImageMetaLine != null;
+
+    public Visibility ImageMetaLineVisibility => HasImageMetaLine ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>预览气泡中展示的 OCR 全文（适度截断）。</summary>
+    public string? OcrPreviewBody
+    {
+        get
+        {
+            if (Type != EntryType.Image || string.IsNullOrWhiteSpace(OcrText)) return null;
+            var t = NormalizeOcrDisplayText(OcrText);
+            return t.Length > 4000 ? t[..4000] + "…" : t;
+        }
+    }
+
+    public bool HasOcrPreviewBody => !string.IsNullOrWhiteSpace(OcrPreviewBody);
+
+    private static string NormalizeOcrDisplayText(string text) =>
+        OcrTextPostProcessor.Normalize(text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Trim());
 
     public string? SubInfo
     {
@@ -157,6 +235,7 @@ public class ClipboardEntry : INotifyPropertyChanged
         {
             if (ShortcutPhrase != null) return $"⚡ {ShortcutPhrase}";
             if (Type == EntryType.Files && FilePaths is { Length: > 1 }) return $"{FilePaths.Length} 个文件";
+            if (Type == EntryType.Image) return ImageMetaLine;
             return null;
         }
     }
@@ -171,7 +250,7 @@ public class ClipboardEntry : INotifyPropertyChanged
             {
                 EntryType.Text => TextContent ?? "",
                 EntryType.Files => string.Join(" ", FilePaths?.Select(Path.GetFileName) ?? []),
-                EntryType.Image => $"image 图片 {ImageWidth}x{ImageHeight}",
+                EntryType.Image => BuildImageSearchableText(),
                 _ => ""
             };
             return ShortcutPhrase != null ? $"{ShortcutPhrase} {baseText}" : baseText;
@@ -195,6 +274,12 @@ public class ClipboardEntry : INotifyPropertyChanged
             _pinyinSearchBlob = PinyinSearchIndex.BuildBlob(key);
             return _pinyinSearchBlob;
         }
+    }
+
+    private string BuildImageSearchableText()
+    {
+        var dim = $"image 图片 {ImageWidth}x{ImageHeight}";
+        return string.IsNullOrWhiteSpace(OcrText) ? dim : $"{dim} {OcrText}";
     }
 
     public bool MatchesSearch(string query)

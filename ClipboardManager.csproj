@@ -3,7 +3,7 @@
   <PropertyGroup>
     <!-- Release：无控制台；Debug：Exe 以便 dotnet run 时附带控制台，避免误以为「没起来」 -->
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -17,7 +17,7 @@
     <AssemblyName Condition="'$(ClipboardXProduct)' == 'ClipboardOnly'">ClipboardX-clipboard</AssemblyName>
     <AssemblyName Condition="'$(ClipboardXProduct)' == 'FileJumpOnly'">ClipboardX-filejump</AssemblyName>
 
-    <Version>1.8.0</Version>
+    <Version>1.9.0</Version>
     <Product>ClipboardX</Product>
     <Company>ClipboardX</Company>
     <RepositoryUrl>https://github.com/chaojimct/clipboardx</RepositoryUrl>

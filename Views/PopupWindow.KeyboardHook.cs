@@ -120,6 +120,19 @@ public partial class PopupWindow : Window
         || (Win32.GetAsyncKeyState(0xA2) & 0x8000) != 0
         || (Win32.GetAsyncKeyState(0xA3) & 0x8000) != 0;
 
+    private static bool IsPhysicalShiftDown() =>
+        (Win32.GetAsyncKeyState(0x10) & 0x8000) != 0
+        || (Win32.GetAsyncKeyState(0xA0) & 0x8000) != 0
+        || (Win32.GetAsyncKeyState(0xA1) & 0x8000) != 0;
+
+    private void DispatchMainEnterFromHook(bool ctrlHeldWithEnter)
+    {
+        if (!ctrlHeldWithEnter && IsPhysicalShiftDown())
+            HandleShiftEnterKey();
+        else
+            HandleMainEnterKey(ctrlHeldWithEnter);
+    }
+
     private bool AltPhysicallyDown() =>
         ((Win32.GetAsyncKeyState(0x12) & 0x8000) != 0)
         || ((Win32.GetAsyncKeyState(0xA4) & 0x8000) != 0)
@@ -579,7 +592,7 @@ public partial class PopupWindow : Window
             if (kb.vkCode == Win32.VK_RETURN)
             {
                 bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
-                Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
+                Dispatcher.BeginInvoke(() => DispatchMainEnterFromHook(ctrlEnter));
                 return (IntPtr)1;
             }
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
@@ -589,7 +602,7 @@ public partial class PopupWindow : Window
         if (kb.vkCode == Win32.VK_RETURN)
         {
             bool ctrlEnter = (Win32.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
-            Dispatcher.BeginInvoke(() => HandleMainEnterKey(ctrlEnter));
+            Dispatcher.BeginInvoke(() => DispatchMainEnterFromHook(ctrlEnter));
             return (IntPtr)1;
         }
 
