@@ -328,6 +328,10 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 - **设置页布局修复**：「退出时自动清空历史」行不再被挤压为 10px 高度
 
+### v1.9.1
+
+- **按键穿透**：实验性功能页可配置；面板打开时按住 CapsLock 等修饰键或已录制组合键将交给 AutoHotkey，不抢占搜索输入
+
 ### v1.9.0
 
 - **图片 OCR**：复制图片后自动 Windows OCR 识别文字，列表/预览可查看、可搜索；右键或 Shift+Enter 粘贴识别文字；缺语言包时引导安装

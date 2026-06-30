@@ -321,6 +321,8 @@ public partial class PopupWindow : Window
         if (!_isPopupVisible)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
+        UpdatePassthroughModifierLatch(kb.vkCode, isKeyDown, isKeyUp);
+
         if (_activeFileJumpPicker != null)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
@@ -573,6 +575,9 @@ public partial class PopupWindow : Window
         if (TryDispatchRegisteredAppHotkeyChordFromHook(kb.vkCode))
             return (IntPtr)1;
 
+        if (KeyPassthroughHelper.ShouldPassthrough(_appSettings, kb.vkCode, isKeyDown, _passthroughModifierLatch))
+            return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+
         bool ctrlHeld = IsPhysicalCtrlDown();
         bool altHeld = AltEffectiveForRegisteredChord();
 
@@ -722,5 +727,19 @@ public partial class PopupWindow : Window
         }
 
         return (IntPtr)1;
+    }
+
+    private void UpdatePassthroughModifierLatch(uint vk, bool isKeyDown, bool isKeyUp)
+    {
+        var bit = KeyPassthroughHelper.VkToModifierLatchBit(vk);
+        if (bit == 0) return;
+        if (isKeyDown && (_appSettings?.KeyPassthroughEnabled ?? false))
+            _passthroughModifierLatch |= bit;
+        else if (isKeyUp)
+        {
+            _passthroughModifierLatch &= ~bit;
+            if (KeyPassthroughHelper.IsModifierFamilyPhysicallyDown(bit))
+                _passthroughModifierLatch |= bit;
+        }
     }
 }

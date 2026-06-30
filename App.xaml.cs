@@ -381,6 +381,12 @@ public partial class App : Application
             _settings.ReplaceSystemWinV = copy.ReplaceSystemWinV;
             _settings.ClearHistoryOnExit = copy.ClearHistoryOnExit;
             _settings.ImageOcrEnabled = copy.ImageOcrEnabled;
+            _settings.KeyPassthroughEnabled = copy.KeyPassthroughEnabled;
+            _settings.KeyPassthroughModifierMask = copy.KeyPassthroughModifierMask;
+            _settings.KeyPassthroughKeepPanelKeys = copy.KeyPassthroughKeepPanelKeys;
+            _settings.KeyPassthroughRules = copy.KeyPassthroughRules
+                .Select(r => new KeyPassthroughRule { Modifiers = r.Modifiers, Key = r.Key })
+                .ToList();
             _settings.ExclusionApps = copy.ExclusionApps;
             // 启用/禁用系统剪贴板历史（Win+V）
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(!_settings.ReplaceSystemWinV);

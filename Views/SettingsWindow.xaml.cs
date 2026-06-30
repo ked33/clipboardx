@@ -50,6 +50,13 @@ public partial class SettingsWindow : Window
     private bool _pendingReplaceSystemWinV;
     private bool _pendingClearHistoryOnExit;
     private bool _pendingImageOcrEnabled;
+    private bool _pendingKeyPassthroughEnabled;
+    private uint _pendingKeyPassthroughModifierMask;
+    private bool _pendingKeyPassthroughKeepPanelKeys = true;
+    private List<KeyPassthroughRule> _pendingKeyPassthroughRules = new();
+    private bool _isRecordingKeyPassthroughRule;
+    private uint _pendingKeyPassthroughRuleModifiers;
+    private uint _pendingKeyPassthroughRuleKey;
     private List<string> _pendingExclusionApps = new();
 
     private static readonly string[] ModifierOptions = ["Ctrl", "Alt", "Win", "CapsLock"];
@@ -68,8 +75,12 @@ public partial class SettingsWindow : Window
 #endif
 #if !CLIPX_FILEJUMP
         FileJumpTab.Visibility = Visibility.Collapsed;
-        ExperimentalFeaturesTab.Visibility = Visibility.Collapsed;
         CustomDialogTab.Visibility = Visibility.Collapsed;
+        HideExplorerExperimentalSection();
+#endif
+#if !CLIPX_CLIPBOARD
+        ClipboardTab.Visibility = Visibility.Collapsed;
+        HideKeyPassthroughExperimentalSection();
 #endif
 
         MaxItemsBox.Text = settings.MaxItems.ToString();
@@ -178,6 +189,17 @@ public partial class SettingsWindow : Window
 
         _pendingImageOcrEnabled = settings.ImageOcrEnabled;
         ImageOcrEnabledText.Text = _pendingImageOcrEnabled ? "开启" : "关闭";
+
+        _pendingKeyPassthroughEnabled = settings.KeyPassthroughEnabled;
+        KeyPassthroughEnabledText.Text = _pendingKeyPassthroughEnabled ? "开启" : "关闭";
+        _pendingKeyPassthroughModifierMask = settings.KeyPassthroughModifierMask;
+        _pendingKeyPassthroughKeepPanelKeys = settings.KeyPassthroughKeepPanelKeys;
+        _pendingKeyPassthroughRules = settings.KeyPassthroughRules
+            .Select(r => new KeyPassthroughRule { Modifiers = r.Modifiers, Key = r.Key })
+            .ToList();
+        ApplyKeyPassthroughModifierChecksFromMask();
+        KeyPassthroughKeepPanelKeysCheck.IsChecked = _pendingKeyPassthroughKeepPanelKeys;
+        ReloadKeyPassthroughRulesList();
 
         _pendingExclusionApps = settings.ExclusionApps.ToList();
         ReloadExclusionAppsList();
@@ -358,6 +380,129 @@ public partial class SettingsWindow : Window
             || (Win32.GetAsyncKeyState(Win32.VK_RWIN) & 0x8000) != 0)
             mod |= Win32.MOD_WIN;
         return mod;
+    }
+
+    private static uint GetPassthroughModifiersForRecording()
+    {
+        var mod = GetHotkeyModifiersForRecording();
+        if ((Win32.GetAsyncKeyState((int)Win32.VK_CAPITAL) & 0x8000) != 0)
+            mod |= Win32.MOD_CAPS;
+        return mod;
+    }
+
+    private void ApplyKeyPassthroughModifierChecksFromMask()
+    {
+        KeyPassthroughCapsCheck.IsChecked = (_pendingKeyPassthroughModifierMask & Win32.MOD_CAPS) != 0;
+        KeyPassthroughShiftCheck.IsChecked = (_pendingKeyPassthroughModifierMask & Win32.MOD_SHIFT) != 0;
+        KeyPassthroughCtrlCheck.IsChecked = (_pendingKeyPassthroughModifierMask & Win32.MOD_CONTROL) != 0;
+        KeyPassthroughAltCheck.IsChecked = (_pendingKeyPassthroughModifierMask & Win32.MOD_ALT) != 0;
+        KeyPassthroughWinCheck.IsChecked = (_pendingKeyPassthroughModifierMask & Win32.MOD_WIN) != 0;
+    }
+
+    private void RebuildKeyPassthroughModifierMaskFromChecks()
+    {
+        uint mask = 0;
+        if (KeyPassthroughCapsCheck.IsChecked == true) mask |= Win32.MOD_CAPS;
+        if (KeyPassthroughShiftCheck.IsChecked == true) mask |= Win32.MOD_SHIFT;
+        if (KeyPassthroughCtrlCheck.IsChecked == true) mask |= Win32.MOD_CONTROL;
+        if (KeyPassthroughAltCheck.IsChecked == true) mask |= Win32.MOD_ALT;
+        if (KeyPassthroughWinCheck.IsChecked == true) mask |= Win32.MOD_WIN;
+        _pendingKeyPassthroughModifierMask = mask;
+    }
+
+    private void ReloadKeyPassthroughRulesList()
+    {
+        KeyPassthroughRulesList.Items.Clear();
+        foreach (var rule in _pendingKeyPassthroughRules)
+            KeyPassthroughRulesList.Items.Add(rule);
+    }
+
+    private void HideExplorerExperimentalSection()
+    {
+        ExplorerExperimentalSection.Visibility = Visibility.Collapsed;
+        ExplorerExperimentalQuickFindRow.Visibility = Visibility.Collapsed;
+        ExplorerExperimentalQuickFindBorder.Visibility = Visibility.Collapsed;
+        ExplorerExperimentalOpenModeRow.Visibility = Visibility.Collapsed;
+        ExplorerExperimentalOpenModeBorder.Visibility = Visibility.Collapsed;
+        ExplorerExperimentalMaxResultsRow.Visibility = Visibility.Collapsed;
+        ExplorerEverythingMaxResultsBox.Visibility = Visibility.Collapsed;
+    }
+
+    private void HideKeyPassthroughExperimentalSection()
+    {
+        KeyPassthroughExperimentalSection.Visibility = Visibility.Collapsed;
+        KeyPassthroughExperimentalToggleRow.Visibility = Visibility.Collapsed;
+        KeyPassthroughExperimentalToggleBorder.Visibility = Visibility.Collapsed;
+        KeyPassthroughExperimentalHint.Visibility = Visibility.Collapsed;
+        KeyPassthroughExperimentalModifiersRow.Visibility = Visibility.Collapsed;
+        KeyPassthroughRulesList.Visibility = Visibility.Collapsed;
+        KeyPassthroughExperimentalActionsRow.Visibility = Visibility.Collapsed;
+    }
+
+    private void KeyPassthroughEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingKeyPassthroughEnabled = !_pendingKeyPassthroughEnabled;
+        KeyPassthroughEnabledText.Text = _pendingKeyPassthroughEnabled ? "开启" : "关闭";
+    }
+
+    private void KeyPassthroughModifierCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        RebuildKeyPassthroughModifierMaskFromChecks();
+    }
+
+    private void KeyPassthroughRecordBox_Click(object sender, RoutedEventArgs e)
+    {
+        _isRecordingKeyPassthroughRule = true;
+        KeyPassthroughRecordText.Text = "按下组合键…";
+        KeyPassthroughRecordText.Foreground = (System.Windows.Media.Brush)FindResource("AccentBg");
+        KeyPassthroughRecordBox.Focus();
+    }
+
+    private void KeyPassthroughRecordBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_isRecordingKeyPassthroughRule) return;
+        e.Handled = true;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin or Key.CapsLock)
+            return;
+
+        uint mod = GetPassthroughModifiersForRecording();
+        if (mod == 0) return;
+
+        _pendingKeyPassthroughRuleModifiers = mod;
+        _pendingKeyPassthroughRuleKey = (uint)KeyInterop.VirtualKeyFromKey(key);
+        _isRecordingKeyPassthroughRule = false;
+        KeyPassthroughRecordText.Text = KeyPassthroughHelper.FormatRule(_pendingKeyPassthroughRuleModifiers, _pendingKeyPassthroughRuleKey);
+        KeyPassthroughRecordText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+
+        var rule = new KeyPassthroughRule
+        {
+            Modifiers = _pendingKeyPassthroughRuleModifiers,
+            Key = _pendingKeyPassthroughRuleKey
+        };
+        if (!_pendingKeyPassthroughRules.Any(r => r.Modifiers == rule.Modifiers && r.Key == rule.Key))
+        {
+            _pendingKeyPassthroughRules.Add(rule);
+            ReloadKeyPassthroughRulesList();
+        }
+        KeyPassthroughRecordText.Text = "录制组合键…";
+    }
+
+    private void KeyPassthroughRecordBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!_isRecordingKeyPassthroughRule) return;
+        _isRecordingKeyPassthroughRule = false;
+        KeyPassthroughRecordText.Text = "录制组合键…";
+        KeyPassthroughRecordText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+    }
+
+    private void KeyPassthroughRuleDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (KeyPassthroughRulesList.SelectedItem is not KeyPassthroughRule selected) return;
+        _pendingKeyPassthroughRules.RemoveAll(r => r.Modifiers == selected.Modifiers && r.Key == selected.Key);
+        ReloadKeyPassthroughRulesList();
     }
 
     private void HotkeyBox_Click(object sender, RoutedEventArgs e)
@@ -1023,6 +1168,13 @@ public partial class SettingsWindow : Window
         _settings.ReplaceSystemWinV = _pendingReplaceSystemWinV;
         _settings.ClearHistoryOnExit = _pendingClearHistoryOnExit;
         _settings.ImageOcrEnabled = _pendingImageOcrEnabled;
+        _settings.KeyPassthroughEnabled = _pendingKeyPassthroughEnabled;
+        RebuildKeyPassthroughModifierMaskFromChecks();
+        _settings.KeyPassthroughModifierMask = _pendingKeyPassthroughModifierMask;
+        _settings.KeyPassthroughKeepPanelKeys = KeyPassthroughKeepPanelKeysCheck.IsChecked == true;
+        _settings.KeyPassthroughRules = _pendingKeyPassthroughRules
+            .Select(r => new KeyPassthroughRule { Modifiers = r.Modifiers, Key = r.Key })
+            .ToList();
         _settings.ExclusionApps = _pendingExclusionApps.ToList();
         _settings.EnableShellNavigateInject = _pendingEnableShellNavigateInject;
         _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(_pendingFileJumpFollowMode);

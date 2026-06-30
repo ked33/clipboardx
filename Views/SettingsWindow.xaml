@@ -850,11 +850,18 @@
                     </Style>
                     <sys:String x:Key="ExperimentalFeaturesIntro">下列功能依赖外部组件或全局键盘钩子等，可能与部分环境不兼容。默认关闭，确认需要后再开启。</sys:String>
                     <sys:String x:Key="ExperimentalExplorerEv_Body">在系统资源管理器、焦点不在地址栏/搜索框时，直接键入字符：用 voidtools Everything 将结果限定在当前文件夹（含子文件夹），小窗列出匹配项；Enter 在资源管理器中定位选中项。需本机已安装并运行 Everything；依赖 Everything64.dll（通常随 Everything 安装）。</sys:String>
+                    <sys:String x:Key="ExperimentalKeyPassthrough_Body">剪贴板面板打开时默认拦截按键用于搜索与导航。开启后，按住指定修饰键或已录制的组合键将交给 AutoHotkey 等外部低级钩子；若外部未处理，按键可能落入前台应用。默认关闭。</sys:String>
                     <ToolTip x:Key="ExperimentalTipExplorerEv" x:Shared="False" MaxWidth="420" Padding="10,8"
                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource ThemeBorder}"
                              BorderThickness="1">
                         <TextBlock FontSize="13" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap"
                                    Text="{StaticResource ExperimentalExplorerEv_Body}" />
+                    </ToolTip>
+                    <ToolTip x:Key="ExperimentalTipKeyPassthrough" x:Shared="False" MaxWidth="420" Padding="10,8"
+                             Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource ThemeBorder}"
+                             BorderThickness="1">
+                        <TextBlock FontSize="13" Foreground="{DynamicResource PrimaryText}" TextWrapping="Wrap"
+                                   Text="{StaticResource ExperimentalKeyPassthrough_Body}" />
                     </ToolTip>
                 </TabItem.Resources>
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,0,0"
@@ -923,18 +930,18 @@
                         <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Foreground="{DynamicResource PrimaryText}"
                                    FontSize="12" Opacity="0.85" TextWrapping="Wrap"
                                    Text="{StaticResource ExperimentalFeaturesIntro}" />
-                        <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,2,0,0">
+                        <StackPanel x:Name="ExplorerExperimentalSection" Grid.Row="2" Grid.ColumnSpan="2">
                             <TextBlock Text="资源管理器 · everything 筛选项" FontSize="18" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource PrimaryText}" />
+                                       Foreground="{DynamicResource PrimaryText}" Margin="0,2,0,0" />
                         </StackPanel>
-                        <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="ExplorerExperimentalQuickFindRow" Grid.Row="4" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource ExperimentalTipExplorerEv}">
                                 <TextBlock Text="当前文件夹内键入筛选" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                             <Label Content="?" Style="{StaticResource ExperimentalHelpGlyphLabel}"
                                    ToolTip="{StaticResource ExperimentalTipExplorerEv}" />
                         </StackPanel>
-                        <Border Grid.Row="4" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="ExplorerExperimentalQuickFindBorder" Grid.Row="4" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="ExplorerEverythingQuickFindCycle_Click"
@@ -942,12 +949,12 @@
                             <TextBlock x:Name="ExplorerEverythingQuickFindText" Foreground="{DynamicResource PrimaryText}" FontSize="14"
                                        HorizontalAlignment="Center" />
                         </Border>
-                        <StackPanel Grid.Row="6" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="ExplorerExperimentalOpenModeRow" Grid.Row="6" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="选中搜索结果后的操作：在资源管理器内就地导航选中文件，或直接打开前台文件对话框跳转到该路径。">
                                 <TextBlock Text="选中操作" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                         </StackPanel>
-                        <Border Grid.Row="6" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="ExplorerExperimentalOpenModeBorder" Grid.Row="6" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="ExplorerQuickFindOpenModeCycle_Click"
@@ -955,7 +962,7 @@
                             <TextBlock x:Name="ExplorerQuickFindOpenModeText" Foreground="{DynamicResource PrimaryText}" FontSize="14"
                                        HorizontalAlignment="Center" />
                         </Border>
-                        <StackPanel Grid.Row="8" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="ExplorerExperimentalMaxResultsRow" Grid.Row="8" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="everything（Everything IPC）单次最多返回条数（1～2000）。">
                                 <TextBlock Text="筛选最大条数" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
@@ -966,6 +973,73 @@
                                  ToolTip="everything（Everything IPC）单次最多返回条数（1～2000）。"
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
+
+                        <StackPanel x:Name="KeyPassthroughExperimentalSection" Grid.Row="10" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                            <TextBlock Text="剪贴板 · 按键穿透" FontSize="18" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource PrimaryText}" />
+                        </StackPanel>
+                        <StackPanel x:Name="KeyPassthroughExperimentalToggleRow" Grid.Row="12" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource ExperimentalTipKeyPassthrough}">
+                                <TextBlock Text="按键穿透" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            </Border>
+                            <Label Content="?" Style="{StaticResource ExperimentalHelpGlyphLabel}"
+                                   ToolTip="{StaticResource ExperimentalTipKeyPassthrough}" />
+                        </StackPanel>
+                        <Border x:Name="KeyPassthroughExperimentalToggleBorder" Grid.Row="12" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                                Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
+                                BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
+                                Cursor="Hand" MouseLeftButtonUp="KeyPassthroughEnabled_Click"
+                                ToolTip="{StaticResource ExperimentalTipKeyPassthrough}">
+                            <TextBlock x:Name="KeyPassthroughEnabledText" Foreground="{DynamicResource PrimaryText}" FontSize="14"
+                                       HorizontalAlignment="Center" />
+                        </Border>
+                        <TextBlock x:Name="KeyPassthroughExperimentalHint" Grid.Row="14" Grid.ColumnSpan="2"
+                                   Text="按住穿透修饰键时，非 Esc/方向键/Enter 等导航键将交给 AutoHotkey；若外部未处理可能落入前台应用。"
+                                   Foreground="{DynamicResource PrimaryText}" FontSize="12" Opacity="0.85" TextWrapping="Wrap" />
+                        <StackPanel x:Name="KeyPassthroughExperimentalModifiersRow" Grid.Row="16" Grid.ColumnSpan="2" Orientation="Horizontal">
+                            <CheckBox x:Name="KeyPassthroughCapsCheck" Content="CapsLock" Margin="0,0,14,0"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      Checked="KeyPassthroughModifierCheck_Changed" Unchecked="KeyPassthroughModifierCheck_Changed" />
+                            <CheckBox x:Name="KeyPassthroughShiftCheck" Content="Shift" Margin="0,0,14,0"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      Checked="KeyPassthroughModifierCheck_Changed" Unchecked="KeyPassthroughModifierCheck_Changed" />
+                            <CheckBox x:Name="KeyPassthroughCtrlCheck" Content="Ctrl" Margin="0,0,14,0"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      Checked="KeyPassthroughModifierCheck_Changed" Unchecked="KeyPassthroughModifierCheck_Changed" />
+                            <CheckBox x:Name="KeyPassthroughAltCheck" Content="Alt" Margin="0,0,14,0"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      Checked="KeyPassthroughModifierCheck_Changed" Unchecked="KeyPassthroughModifierCheck_Changed" />
+                            <CheckBox x:Name="KeyPassthroughWinCheck" Content="Win"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      Checked="KeyPassthroughModifierCheck_Changed" Unchecked="KeyPassthroughModifierCheck_Changed" />
+                        </StackPanel>
+                        <ListBox x:Name="KeyPassthroughRulesList" Grid.Row="18" Grid.ColumnSpan="2"
+                                 Foreground="{DynamicResource PrimaryText}"
+                                 Background="{DynamicResource SurfaceBrush}"
+                                 BorderBrush="{DynamicResource ThemeBorder}"
+                                 DisplayMemberPath="DisplayName"
+                                 MinHeight="48" MaxHeight="100" />
+                        <StackPanel x:Name="KeyPassthroughExperimentalActionsRow" Grid.Row="20" Grid.ColumnSpan="2" Orientation="Horizontal">
+                            <Border x:Name="KeyPassthroughRecordBox" MinWidth="160" MaxWidth="240"
+                                    Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
+                                    BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
+                                    Cursor="Hand" Focusable="True"
+                                    MouseLeftButtonUp="KeyPassthroughRecordBox_Click"
+                                    PreviewKeyDown="KeyPassthroughRecordBox_KeyDown"
+                                    LostFocus="KeyPassthroughRecordBox_LostFocus"
+                                    ToolTip="点击后按下要穿透的组合键（如 CapsLock+K）">
+                                <TextBlock x:Name="KeyPassthroughRecordText" Foreground="{DynamicResource PrimaryText}" FontSize="13"
+                                           Text="录制组合键…" HorizontalAlignment="Center" />
+                            </Border>
+                            <Button Content="删除所选" Padding="12,6" MinWidth="90" Margin="10,0,0,0"
+                                    Background="{DynamicResource SurfaceBrush}"
+                                    Foreground="{DynamicResource PrimaryText}"
+                                    BorderBrush="{DynamicResource ThemeBorder}"
+                                    Click="KeyPassthroughRuleDelete_Click" Cursor="Hand" />
+                            <CheckBox x:Name="KeyPassthroughKeepPanelKeysCheck" Content="保留面板导航键" Margin="16,0,0,0"
+                                      Foreground="{DynamicResource PrimaryText}" VerticalAlignment="Center"
+                                      IsChecked="True" ToolTip="穿透时仍由面板处理 Esc、方向键、Enter 等" />
+                        </StackPanel>
 
                         <StackPanel Grid.Row="30" Grid.ColumnSpan="2" Margin="0,8,0,0">
                             <TextBlock Text="排除应用列表" FontSize="18" FontWeight="SemiBold"

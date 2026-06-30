@@ -135,6 +135,8 @@ public partial class PopupWindow : Window
     /// 主面板吞掉 Alt KeyDown 后，系统往往仍报告 Alt 未按下；锁存到 Alt KeyUp，供 Alt+/、Alt+` 等与 VkToChar 防录入对齐。
     /// </summary>
     private bool _swallowedMenuAltLatch;
+    /// <summary>修饰键 Down 锁存（MOD_* / MOD_CAPS），供按键穿透在钩子链上游可靠识别组合键。</summary>
+    private uint _passthroughModifierLatch;
     /// <summary>Win+V 被本程序拦截后，吞掉后续 Win KeyUp 以防止开始菜单弹出。</summary>
     private bool _winVIntercepted;
     private readonly List<(Border Row, Action Activate)> _contextMenuNav = new();
@@ -461,6 +463,9 @@ public partial class PopupWindow : Window
         ApplyPopupPanelLayout(settings);
         TrimItems();
         UpdateBatchHeaderUi();
+
+        if (!settings.KeyPassthroughEnabled)
+            _passthroughModifierLatch = 0;
 
 #if CLIPX_CLIPBOARD
         if (settings.ImageOcrEnabled && _imageOcrQueue != null)
@@ -2693,6 +2698,7 @@ public partial class PopupWindow : Window
     {
         if (_isResizing) return;
         _swallowedMenuAltLatch = false;
+        _passthroughModifierLatch = 0;
         _popupPinned = false;
         _isPopupVisible = false;
         _lockPopupWindowNomove = false;

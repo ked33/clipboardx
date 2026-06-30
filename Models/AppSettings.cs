@@ -172,6 +172,18 @@ public class AppSettings
     /// <summary>排除应用列表：前台属于这些进程时不触发 ClipboardX 全局快捷键（进程名不含 .exe 后缀，不区分大小写）。</summary>
     public List<string> ExclusionApps { get; set; } = new();
 
+    /// <summary>面板打开时将指定按键交给 AutoHotkey 等外部低级钩子（见设置「实验性功能」）。</summary>
+    public bool KeyPassthroughEnabled { get; set; }
+
+    /// <summary>按住所列修饰键时穿透非面板必要键（<see cref="Win32.MOD_*"/> 与 <see cref="Win32.MOD_CAPS"/>）。</summary>
+    public uint KeyPassthroughModifierMask { get; set; } = Win32.MOD_CAPS;
+
+    /// <summary>穿透时仍由面板处理 Esc、方向键、Enter 等导航键。</summary>
+    public bool KeyPassthroughKeepPanelKeys { get; set; } = true;
+
+    /// <summary>精确穿透组合键；Key 为 0 表示该修饰键下任意键穿透。</summary>
+    public List<KeyPassthroughRule> KeyPassthroughRules { get; set; } = new();
+
     /// <summary>各文件夹的确认次数统计（key=归一化路径，value=累计次数）。未达阈值时仅计数，达阈值后才写入 <see cref="RecentFileDialogFolders"/>。</summary>
     public Dictionary<string, int> FolderConfirmCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -346,6 +358,7 @@ public class AppSettings
         if ((modifiers & Win32.MOD_SHIFT) != 0) parts.Add("Shift");
         if ((modifiers & Win32.MOD_ALT) != 0) parts.Add("Alt");
         if ((modifiers & Win32.MOD_WIN) != 0) parts.Add("Win");
+        if ((modifiers & Win32.MOD_CAPS) != 0) parts.Add("CapsLock");
         parts.Add(VkToName(key));
         return string.Join("+", parts);
     }
@@ -558,6 +571,7 @@ public class AppSettings
     {
         settings.RecentFileDialogFolders ??= new List<string>();
         settings.ExclusionApps ??= new List<string>();
+        settings.KeyPassthroughRules ??= new List<KeyPassthroughRule>();
         settings.RecentFileDialogFolders.RemoveAll(string.IsNullOrWhiteSpace);
         if (settings.RecentFileDialogFolders.Count == 0 && !string.IsNullOrWhiteSpace(settings.LastFileDialogFolder))
         {
@@ -717,6 +731,12 @@ public class AppSettings
         FileJumpPickerEverythingFolderSearch = FileJumpPickerEverythingFolderSearch,
         UseFindXSearch = UseFindXSearch,
         ExplorerQuickFindOpenMode = ExplorerQuickFindOpenMode,
-        ExclusionApps = ExclusionApps.ToList()
+        ExclusionApps = ExclusionApps.ToList(),
+        KeyPassthroughEnabled = KeyPassthroughEnabled,
+        KeyPassthroughModifierMask = KeyPassthroughModifierMask,
+        KeyPassthroughKeepPanelKeys = KeyPassthroughKeepPanelKeys,
+        KeyPassthroughRules = KeyPassthroughRules
+            .Select(r => new KeyPassthroughRule { Modifiers = r.Modifiers, Key = r.Key })
+            .ToList()
     };
 }

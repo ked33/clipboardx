@@ -20,6 +20,10 @@ internal static class Win32
     public const uint MOD_SHIFT = 0x0004;
     public const uint MOD_WIN = 0x0008;
     public const uint MOD_NOREPEAT = 0x4000;
+    /// <summary>自定义修饰键掩码：CapsLock（用于按键穿透配置，非 RegisterHotKey）。</summary>
+    public const uint MOD_CAPS = 0x10000;
+
+    public const uint VK_CAPITAL = 0x14;
 
     public const int WH_KEYBOARD_LL = 13;
     public const int WH_MOUSE_LL = 14;
