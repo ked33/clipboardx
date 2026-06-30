@@ -6052,6 +6052,51 @@ public partial class PopupWindow : Window
         }
     }
 
+    /// <summary>
+    /// 将普通文本写入临时 .txt 并置于剪贴板文件列表，在资源管理器中粘贴即可落盘。
+    /// </summary>
+    private async void PasteTextAsFileForExplorer()
+    {
+        if (ItemsList.SelectedItem is not ClipboardEntry item || item.Type != EntryType.Text) return;
+        var text = item.TextContent;
+        if (string.IsNullOrEmpty(text) || IsWellFormedJson(text)) return;
+
+        _pasteInProgress = true;
+        try
+        {
+        ClearPendingDelete();
+
+        if (!item.IsQuickPaste)
+        {
+            var idx = _allItems.IndexOf(item);
+            if (idx > 0) { _allItems.RemoveAt(idx); _allItems.Insert(0, item); }
+            item.TouchCopiedTime();
+            if (item.PersistedId is long pid)
+                _historyStore.TryUpdateCopiedAt(pid, item.CopiedAt);
+        }
+
+        var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+        try { Directory.CreateDirectory(dir); }
+        catch { return; }
+
+        var path = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+        try
+        {
+            File.WriteAllText(path, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch { return; }
+
+        await CompletePasteTempFileToExplorerAsync(
+            path,
+            $"textChars={text.Length}",
+            $"SetFileDropList explorer_temp_txt file=\"{path}\"");
+        }
+        finally
+        {
+            _pasteInProgress = false;
+        }
+    }
+
     #endregion
 
     #region UI Event Handlers
@@ -6215,6 +6260,9 @@ public partial class PopupWindow : Window
         ItemsList.SelectedItem = entry;
         CtxShortcutText.Text = entry.IsQuickPaste ? "⚡ 修改快捷短语" : "⚡ 设为快捷短语";
         CtxPasteAsFileBorder.Visibility = entry.Type == EntryType.Image
+            || (entry.Type == EntryType.Text
+                && !string.IsNullOrEmpty(entry.TextContent)
+                && !IsWellFormedJson(entry.TextContent))
             ? Visibility.Visible
             : Visibility.Collapsed;
         CtxPasteOcrTextBorder.Visibility = entry.Type == EntryType.Image
@@ -6337,6 +6385,11 @@ public partial class PopupWindow : Window
         {
             ItemsList.SelectedItem = _contextEntry;
             PasteImageAsFileForExplorer();
+        }
+        else if (_contextEntry is { Type: EntryType.Text })
+        {
+            ItemsList.SelectedItem = _contextEntry;
+            PasteTextAsFileForExplorer();
         }
     }
 
