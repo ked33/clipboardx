@@ -666,10 +666,23 @@ public partial class PopupWindow : Window
                 Dispatcher.BeginInvoke(() => ScrollPage(1));
                 return (IntPtr)1;
             case Win32.VK_LEFT:
-                Dispatcher.BeginInvoke(() => ScrollPage(-1));
+                Dispatcher.BeginInvoke(() =>
+                {
+                    // 预览气泡打开且为多图条目时，← → 切换图片
+                    if (EntryPreviewPopup.IsOpen && _previewImageFiles is { Length: > 1 })
+                        NavigatePreviewImage(-1);
+                    else
+                        ScrollPage(-1);
+                });
                 return (IntPtr)1;
             case Win32.VK_RIGHT:
-                Dispatcher.BeginInvoke(() => ScrollPage(1));
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (EntryPreviewPopup.IsOpen && _previewImageFiles is { Length: > 1 })
+                        NavigatePreviewImage(1);
+                    else
+                        ScrollPage(1);
+                });
                 return (IntPtr)1;
             case Win32.VK_ESCAPE:
                 Dispatcher.BeginInvoke(() =>

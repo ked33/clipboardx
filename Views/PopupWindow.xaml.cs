@@ -5045,7 +5045,7 @@ public partial class PopupWindow : Window
             ("a-z", "拼音搜索"),
         };
 #if CLIPX_CLIPBOARD
-        lines.Add(("Space/中键", "预览当前条目"));
+        lines.Add(("Space/中键", "预览当前条目（多图条目预览时 ← → 切换图片）"));
         lines.Add(("Shift+↑↓", "扩展多选；FIFO/LIFO 时新复制会按模式入队（角标、队列置顶）"));
         var batchCy = _appSettings?.BatchModeCycleHotkeyDisplayName ?? "Alt+/";
         lines.Add((batchCy, "循环批量模式（普通→LIFO→FIFO），与顶栏「批量」左键相同；可在设置里修改"));
@@ -5130,7 +5130,20 @@ public partial class PopupWindow : Window
 
     #region Entry preview bubble (Space)
 
-    private void CloseEntryPreviewBubble() => EntryPreviewPopup.IsOpen = false;
+    /// <summary>多图预览时当前查看的图片索引（0 起）；切换条目时重置。</summary>
+    private int _previewImageFileIndex;
+    /// <summary>当前预览气泡绑定的多图文件路径列表（仅 Files 多图条目有值）。</summary>
+    private string[]? _previewImageFiles;
+    /// <summary>当前预览气泡绑定的条目引用（用于检测切换条目并重置索引）。</summary>
+    private ClipboardEntry? _previewImageFilesSource;
+
+    private void CloseEntryPreviewBubble()
+    {
+        EntryPreviewPopup.IsOpen = false;
+        _previewImageFiles = null;
+        _previewImageFileIndex = 0;
+        _previewImageFilesSource = null;
+    }
 
     private void ToggleEntryPreviewBubble()
     {
@@ -5272,10 +5285,19 @@ public partial class PopupWindow : Window
         EntryPreviewText.Text = "";
         EntryPreviewImageMeta.Visibility = Visibility.Collapsed;
         EntryPreviewImageMeta.Text = "";
+        EntryPreviewImageNav.Visibility = Visibility.Collapsed;
         EntryPreviewOcrSeparator.Visibility = Visibility.Collapsed;
         EntryPreviewOcrHeader.Visibility = Visibility.Collapsed;
         EntryPreviewOcrText.Visibility = Visibility.Collapsed;
         EntryPreviewOcrText.Text = "";
+
+        // 切换条目时重置多图导航状态
+        if (_previewImageFiles == null || entry == null || !ReferenceEquals(_previewImageFilesSource, entry))
+        {
+            _previewImageFiles = null;
+            _previewImageFileIndex = 0;
+            _previewImageFilesSource = entry;
+        }
 
         if (entry == null) return;
 
@@ -5296,13 +5318,36 @@ public partial class PopupWindow : Window
                 EntryPreviewImageMeta.Text = $"{entry.ImageWidth}×{entry.ImageHeight} 图片";
                 EntryPreviewImageMeta.Visibility = Visibility.Visible;
             }
+            else if (entry.IsMultiImageFiles)
+            {
+                // 多图：初始化图片路径列表与索引
+                _previewImageFiles = entry.GetImageFilePaths();
+                if (_previewImageFiles.Length > 0)
+                {
+                    if (_previewImageFileIndex >= _previewImageFiles.Length) _previewImageFileIndex = 0;
+                    EntryPreviewImageMeta.Text = $"共 {entry.FilePaths!.Length} 个文件 · {_previewImageFiles.Length} 张图片";
+                    EntryPreviewImageMeta.Visibility = Visibility.Visible;
+                }
+            }
+            else if (entry.IsImageFile)
+            {
+                EntryPreviewImageMeta.Text = $"{entry.FilePaths!.Length} 个文件";
+                EntryPreviewImageMeta.Visibility = Visibility.Visible;
+            }
 
-            var bmp = LoadEntryPreviewBitmap(entry);
+            var bmp = LoadEntryPreviewBitmap(entry, _previewImageFileIndex);
             if (bmp != null)
             {
                 EntryPreviewImage.Source = bmp;
                 EntryPreviewImage.Visibility = Visibility.Visible;
                 showedImage = true;
+            }
+
+            // 多图导航条
+            if (entry.IsMultiImageFiles && _previewImageFiles is { Length: > 1 })
+            {
+                EntryPreviewImgIndex.Text = $"{_previewImageFileIndex + 1} / {_previewImageFiles.Length}";
+                EntryPreviewImageNav.Visibility = Visibility.Visible;
             }
 
             if (entry.Type == EntryType.Image)
@@ -5344,7 +5389,7 @@ public partial class PopupWindow : Window
         EntryPreviewText.Visibility = Visibility.Visible;
     }
 
-    private static BitmapSource? LoadEntryPreviewBitmap(ClipboardEntry entry)
+    private static BitmapSource? LoadEntryPreviewBitmap(ClipboardEntry entry, int imageFileIndex = 0)
     {
         try
         {
@@ -5361,8 +5406,14 @@ public partial class PopupWindow : Window
                 return bi;
             }
 
-            if (entry.IsImageFile && entry.FilePaths![0] is { } p && File.Exists(p))
+            if (entry.IsImageFile && entry.FilePaths!.Length > 0)
             {
+                // 多图：按索引选择；单图或索引越界时回退到首张
+                var paths = entry.GetImageFilePaths();
+                string p = paths.Length > 0
+                    ? paths[Math.Clamp(imageFileIndex, 0, paths.Length - 1)]
+                    : entry.FilePaths[0];
+                if (!File.Exists(p)) return null;
                 var bi = new BitmapImage();
                 bi.BeginInit();
                 bi.UriSource = new Uri(Path.GetFullPath(p));
@@ -5379,6 +5430,30 @@ public partial class PopupWindow : Window
         }
 
         return null;
+    }
+
+    /// <summary>多图预览：前进/后退一张（delta = ±1）。仅在多图 Files 条目预览时生效。</summary>
+    private void NavigatePreviewImage(int delta)
+    {
+        if (!EntryPreviewPopup.IsOpen) return;
+        if (_previewImageFiles is not { Length: > 1 }) return;
+        var n = _previewImageFiles.Length;
+        _previewImageFileIndex = ((_previewImageFileIndex + delta) % n + n) % n;
+        if (ItemsList.SelectedItem is ClipboardEntry e)
+            UpdateEntryPreviewBubbleContent(e);
+        PositionEntryPreviewPopup();
+    }
+
+    private void EntryPreviewImgPrev_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        NavigatePreviewImage(-1);
+    }
+
+    private void EntryPreviewImgNext_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        NavigatePreviewImage(1);
     }
 
     private void SyncEntryPreviewWithSelection()

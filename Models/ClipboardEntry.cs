@@ -168,6 +168,36 @@ public class ClipboardEntry : INotifyPropertyChanged
         && FilePaths is { Length: >= 1 }
         && ImageExtensions.Contains(Path.GetExtension(FilePaths[0]));
 
+    /// <summary>Files 条目中属于图片的文件数量（按扩展名判断）。</summary>
+    public int ImageFileCount
+    {
+        get
+        {
+            if (Type != EntryType.Files || FilePaths is null) return 0;
+            int n = 0;
+            foreach (var p in FilePaths)
+            {
+                if (ImageExtensions.Contains(Path.GetExtension(p))) n++;
+            }
+            return n;
+        }
+    }
+
+    /// <summary>Files 条目包含多张图片（用于预览气泡多图导航）。</summary>
+    public bool IsMultiImageFiles => Type == EntryType.Files && ImageFileCount > 1;
+
+    /// <summary>返回 Files 条目中所有图片文件路径（仅图片扩展名）。</summary>
+    public string[] GetImageFilePaths()
+    {
+        if (Type != EntryType.Files || FilePaths is null) return Array.Empty<string>();
+        var list = new List<string>(FilePaths.Length);
+        foreach (var p in FilePaths)
+        {
+            if (ImageExtensions.Contains(Path.GetExtension(p))) list.Add(p);
+        }
+        return list.ToArray();
+    }
+
     public bool HasThumbnail => Type == EntryType.Image || IsImageFile;
     public bool HasIcon => !HasThumbnail;
 
