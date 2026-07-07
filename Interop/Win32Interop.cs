@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -138,6 +140,178 @@ internal static class Win32
     /// <summary>当前持有 OpenClipboard 的窗口；非 0 且非自身意味着目标程序正在读取我们刚 Set 的内容。</summary>
     [DllImport("user32.dll")]
     public static extern IntPtr GetOpenClipboardWindow();
+
+    public const uint CF_UNICODETEXT = 13;
+    public const uint CF_DIB = 8;
+    public const uint CF_HDROP = 15;
+    public const uint GMEM_MOVEABLE = 0x0002;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GlobalUnlock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    /// <summary>诊断用：当前 OpenClipboard 占用者（无则返回 none）。</summary>
+    public static string DescribeClipboardHolder()
+    {
+        var h = GetOpenClipboardWindow();
+        if (h == IntPtr.Zero) return "none";
+        GetWindowThreadProcessId(h, out var pid);
+        try
+        {
+            var proc = Process.GetProcessById((int)pid);
+            return $"hwnd=0x{h.ToInt64():X} pid={pid} name={proc.ProcessName}";
+        }
+        catch
+        {
+            return $"hwnd=0x{h.ToInt64():X} pid={pid} name=?";
+        }
+    }
+
+    /// <summary>
+    /// 用 user32 直接写 CF_UNICODETEXT，绕过 WPF/OLE 的长占用窗口；失败时不抛异常。
+    /// SetClipboardData 成功后 hGlobal 所有权移交系统。
+    /// </summary>
+    public static bool TrySetClipboardTextNative(string text, IntPtr hwndOwner)
+    {
+        if (hwndOwner == IntPtr.Zero || text == null) return false;
+        if (!OpenClipboard(hwndOwner)) return false;
+
+        IntPtr hGlobal = IntPtr.Zero;
+        try
+        {
+            if (!EmptyClipboard()) return false;
+
+            var byteCount = (text.Length + 1) * 2;
+            hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)byteCount);
+            if (hGlobal == IntPtr.Zero) return false;
+
+            var p = GlobalLock(hGlobal);
+            if (p == IntPtr.Zero) return false;
+            try
+            {
+                var bytes = Encoding.Unicode.GetBytes(text);
+                Marshal.Copy(bytes, 0, p, bytes.Length);
+                Marshal.WriteInt16(p, bytes.Length, 0);
+            }
+            finally
+            {
+                GlobalUnlock(hGlobal);
+            }
+
+            if (SetClipboardData(CF_UNICODETEXT, hGlobal) == IntPtr.Zero)
+                return false;
+
+            hGlobal = IntPtr.Zero;
+            return true;
+        }
+        finally
+        {
+            if (hGlobal != IntPtr.Zero)
+                GlobalFree(hGlobal);
+            CloseClipboard();
+        }
+    }
+
+    /// <summary>用 user32 直接写 CF_DIB；失败时不抛异常。</summary>
+    public static bool TrySetClipboardDibNative(byte[] dib, IntPtr hwndOwner)
+    {
+        if (hwndOwner == IntPtr.Zero || dib == null || dib.Length < 40) return false;
+        if (!OpenClipboard(hwndOwner)) return false;
+
+        IntPtr hGlobal = IntPtr.Zero;
+        try
+        {
+            if (!EmptyClipboard()) return false;
+            hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)dib.Length);
+            if (hGlobal == IntPtr.Zero) return false;
+
+            var p = GlobalLock(hGlobal);
+            if (p == IntPtr.Zero) return false;
+            try
+            {
+                Marshal.Copy(dib, 0, p, dib.Length);
+            }
+            finally
+            {
+                GlobalUnlock(hGlobal);
+            }
+
+            if (SetClipboardData(CF_DIB, hGlobal) == IntPtr.Zero) return false;
+            hGlobal = IntPtr.Zero;
+            return true;
+        }
+        finally
+        {
+            if (hGlobal != IntPtr.Zero)
+                GlobalFree(hGlobal);
+            CloseClipboard();
+        }
+    }
+
+    /// <summary>用 user32 直接写 CF_HDROP（Unicode 路径列表）；失败时不抛异常。</summary>
+    public static bool TrySetClipboardFileDropListNative(IReadOnlyList<string> paths, IntPtr hwndOwner)
+    {
+        if (hwndOwner == IntPtr.Zero || paths == null || paths.Count == 0) return false;
+
+        const int dropFilesSize = 20;
+        var pathsPart = new StringBuilder();
+        var valid = 0;
+        foreach (var path in paths)
+        {
+            if (string.IsNullOrEmpty(path)) continue;
+            pathsPart.Append(path);
+            pathsPart.Append('\0');
+            valid++;
+        }
+        if (valid == 0) return false;
+        pathsPart.Append('\0');
+
+        var pathBytes = Encoding.Unicode.GetBytes(pathsPart.ToString());
+        var totalSize = dropFilesSize + pathBytes.Length;
+
+        if (!OpenClipboard(hwndOwner)) return false;
+        IntPtr hGlobal = IntPtr.Zero;
+        try
+        {
+            if (!EmptyClipboard()) return false;
+            hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)totalSize);
+            if (hGlobal == IntPtr.Zero) return false;
+
+            var p = GlobalLock(hGlobal);
+            if (p == IntPtr.Zero) return false;
+            try
+            {
+                Marshal.WriteInt32(p, 0, dropFilesSize);
+                Marshal.WriteInt32(p, 16, 1);
+                Marshal.Copy(pathBytes, 0, IntPtr.Add(p, dropFilesSize), pathBytes.Length);
+            }
+            finally
+            {
+                GlobalUnlock(hGlobal);
+            }
+
+            if (SetClipboardData(CF_HDROP, hGlobal) == IntPtr.Zero) return false;
+            hGlobal = IntPtr.Zero;
+            return true;
+        }
+        finally
+        {
+            if (hGlobal != IntPtr.Zero)
+                GlobalFree(hGlobal);
+            CloseClipboard();
+        }
+    }
 
     /// <summary>
     /// 在写入 WPF Clipboard 之前：若抢占成功则 EmptyClipboard，常能更快结束上一进程的延迟渲染/OLE 占用。

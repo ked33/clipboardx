@@ -1661,12 +1661,11 @@ public partial class PopupWindow : Window
                     switch (item.Type)
                     {
                         case EntryType.Text:
-                            ok = await TrySetClipboardAsync(
-                                () => System.Windows.Clipboard.SetText(item.TextContent ?? ""),
-                                $"queueHead SetText len={item.TextContent?.Length ?? 0}",
+                            ok = await TrySetClipboardTextWithNativeFallbackAsync(
+                                item.TextContent ?? "",
+                                _hwnd,
                                 maxRetries: clipRetries,
-                                delayMs: clipRetryDelayMs,
-                                clipNudgeHwnd: _hwnd,
+                                baseDelayMs: clipRetryDelayMs,
                                 canContinueBeforeEachAttempt: queueCoherence);
                             break;
                         case EntryType.Image:
@@ -1683,55 +1682,24 @@ public partial class PopupWindow : Window
                             if (bi != null && bi.CanFreeze) bi.Freeze();
                             if (bi != null)
                             {
-                                ok = await TrySetClipboardAsync(
-                                    () => System.Windows.Clipboard.SetImage(bi),
-                                    $"queueHead SetImage {bi.PixelWidth}x{bi.PixelHeight}",
+                                ok = await TrySetClipboardImageWithNativeFallbackAsync(
+                                    bi,
+                                    item.ImageData,
+                                    _hwnd,
                                     maxRetries: clipRetries,
-                                    delayMs: clipRetryDelayMs,
-                                    clipNudgeHwnd: _hwnd,
-                                    canContinueBeforeEachAttempt: queueCoherence);
-                            }
-                            if (!ok && item.ImageData is { Length: > 0 } && BatchQueueHeadStillThisEntry(item))
-                            {
-                                string? tmpPath = null;
-                                try
-                                {
-                                    var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
-                                    Directory.CreateDirectory(dir);
-                                    tmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
-                                    File.WriteAllBytes(tmpPath, item.ImageData);
-                                    var flFb = new StringCollection();
-                                    flFb.Add(tmpPath);
-                                    ok = await TrySetClipboardAsync(
-                                        () => System.Windows.Clipboard.SetFileDropList(flFb),
-                                        "queueHead SetFileDropList imageFallback",
-                                        maxRetries: clipRetries,
-                                        delayMs: clipRetryDelayMs,
-                                        clipNudgeHwnd: _hwnd,
-                                        canContinueBeforeEachAttempt: queueCoherence);
-                                    if (!ok && tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
-                                }
-                                catch (Exception ex)
-                                {
-                                    ClipboardDiagnosticsLog.Write($"queueHead image fallback EX {ex.GetType().Name}: {ex.Message}");
-                                    if (tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
-                                }
+                                    baseDelayMs: clipRetryDelayMs);
                             }
                             break;
                         }
                         case EntryType.Files:
-                        {
-                            var fl = new StringCollection();
-                            fl.AddRange(item.FilePaths!);
-                            ok = await TrySetClipboardAsync(
-                                () => System.Windows.Clipboard.SetFileDropList(fl),
-                                $"queueHead count={fl.Count}",
+                            ok = await TrySetClipboardFileDropListWithNativeFallbackAsync(
+                                item.FilePaths!,
+                                $"queueHead count={item.FilePaths!.Length}",
+                                _hwnd,
                                 maxRetries: clipRetries,
-                                delayMs: clipRetryDelayMs,
-                                clipNudgeHwnd: _hwnd,
+                                baseDelayMs: clipRetryDelayMs,
                                 canContinueBeforeEachAttempt: queueCoherence);
                             break;
-                        }
                     }
                 }
                 catch (Exception ex)
@@ -2178,12 +2146,11 @@ public partial class PopupWindow : Window
                 Win32.TryEmptyClipboardAfterOpen(_hwnd);
 
             _isSettingClipboard = true;
-            var ok = await TrySetClipboardAsync(
-                () => System.Windows.Clipboard.SetText(combined),
-                $"SetText batchCombined len={combined.Length}",
+            var ok = await TrySetClipboardTextWithNativeFallbackAsync(
+                combined,
+                _hwnd,
                 maxRetries: 10,
-                delayMs: 45,
-                clipNudgeHwnd: _hwnd);
+                baseDelayMs: 60);
             bool insertedMerged = false;
             if (ok)
             {
@@ -2286,12 +2253,14 @@ public partial class PopupWindow : Window
                 Win32.TryEmptyClipboardAfterOpen(_hwnd);
 
             _isSettingClipboard = true;
-            var ok = await TrySetClipboardAsync(
-                () => System.Windows.Clipboard.SetFileDropList(paths),
-                $"SetFileDropList batchAllAsFiles count={paths.Count}",
+            var pathArr = new string[paths.Count];
+            paths.CopyTo(pathArr, 0);
+            var ok = await TrySetClipboardFileDropListWithNativeFallbackAsync(
+                pathArr,
+                $"batchAllAsFiles count={paths.Count}",
+                _hwnd,
                 maxRetries: 10,
-                delayMs: 50,
-                clipNudgeHwnd: _hwnd);
+                baseDelayMs: 60);
             bool insertedMerged = false;
             if (ok)
             {
@@ -5613,13 +5582,282 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>
-    /// 使用 await Task.Delay 重试，避免 Thread.Sleep 卡死 UI；仅少量短重试，失败快速返回。
+    /// 使用 await Task.Delay 重试，避免 Thread.Sleep 卡死 UI；CANT_OPEN 时记录占用者与耗时，指数退避。
     /// </summary>
+    private static int ComputeClipboardRetryDelayMs(int failedAttemptIndex, int baseDelayMs)
+    {
+        var mult = 1 << Math.Min(failedAttemptIndex, 3);
+        return Math.Min(baseDelayMs * mult, 400);
+    }
+
+    private static async Task<bool> TrySetClipboardTextWithNativeFallbackAsync(
+        string text,
+        IntPtr hwnd,
+        int maxRetries,
+        int baseDelayMs,
+        Func<bool>? canContinueBeforeEachAttempt = null)
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+            {
+                ClipboardDiagnosticsLog.Write($"TrySetClipboardTextNative aborted coherence len={text.Length} attempt={i + 1}");
+                return false;
+            }
+
+            var sw = Stopwatch.StartNew();
+            if (Win32.TrySetClipboardTextNative(text, hwnd))
+            {
+                sw.Stop();
+                if (i > 0)
+                    ClipboardDiagnosticsLog.Write($"TrySetClipboardTextNative OK after retry i={i} len={text.Length} elapsedMs={sw.ElapsedMilliseconds}");
+                return true;
+            }
+            sw.Stop();
+            ClipboardDiagnosticsLog.Write(
+                $"TrySetClipboardTextNative fail attempt={i + 1}/{maxRetries} len={text.Length} elapsedMs={sw.ElapsedMilliseconds} holder={Win32.DescribeClipboardHolder()}");
+
+            if (i >= maxRetries - 1) break;
+
+            if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+            {
+                ClipboardDiagnosticsLog.Write($"TrySetClipboardTextNative aborted coherence before retry delay len={text.Length}");
+                return false;
+            }
+
+            if (hwnd != IntPtr.Zero && Win32.TryEmptyClipboardAfterOpen(hwnd))
+                ClipboardDiagnosticsLog.Write($"TrySetClipboardTextNative reNudge afterAttempt={i + 1}");
+
+            await Task.Delay(ComputeClipboardRetryDelayMs(i, baseDelayMs));
+        }
+
+        ClipboardDiagnosticsLog.Write(
+            $"TrySetClipboardTextNative GAVE_UP len={text.Length} holder={Win32.DescribeClipboardHolder()} → fallback OLE SetText");
+        return await TrySetClipboardAsync(
+            () => System.Windows.Clipboard.SetText(text),
+            $"SetText-OLE len={text.Length}",
+            maxRetries: maxRetries,
+            delayMs: baseDelayMs,
+            clipNudgeHwnd: hwnd,
+            canContinueBeforeEachAttempt: canContinueBeforeEachAttempt);
+    }
+
+    private static byte[]? CreateDibBytesFromBitmapSource(BitmapSource source)
+    {
+        try
+        {
+            var bs = source;
+            if (bs.Format != PixelFormats.Bgr24)
+            {
+                var converted = new FormatConvertedBitmap(bs, PixelFormats.Bgr24, null, 0);
+                converted.Freeze();
+                bs = converted;
+            }
+
+            var width = bs.PixelWidth;
+            var height = bs.PixelHeight;
+            if (width <= 0 || height <= 0) return null;
+
+            const int bpp = 3;
+            var stride = (width * bpp + 3) & ~3;
+            var pixels = new byte[stride * height];
+            bs.CopyPixels(pixels, stride, 0);
+
+            const int headerSize = 40;
+            var dib = new byte[headerSize + stride * height];
+            BitConverter.TryWriteBytes(dib.AsSpan(0, 4), headerSize);
+            BitConverter.TryWriteBytes(dib.AsSpan(4, 4), width);
+            BitConverter.TryWriteBytes(dib.AsSpan(8, 4), height);
+            BitConverter.TryWriteBytes(dib.AsSpan(12, 2), (short)1);
+            BitConverter.TryWriteBytes(dib.AsSpan(14, 2), (short)24);
+            BitConverter.TryWriteBytes(dib.AsSpan(20, 4), stride * height);
+
+            for (var y = 0; y < height; y++)
+                Buffer.BlockCopy(pixels, y * stride, dib, headerSize + (height - 1 - y) * stride, stride);
+
+            return dib;
+        }
+        catch (Exception ex)
+        {
+            ClipboardDiagnosticsLog.Write($"CreateDibBytesFromBitmapSource EX {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static async Task<bool> TryNativeClipboardWithRetriesAsync(
+        string tag,
+        Func<bool> trySet,
+        IntPtr hwnd,
+        int maxRetries,
+        int baseDelayMs,
+        Func<bool>? canContinueBeforeEachAttempt = null)
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+            {
+                ClipboardDiagnosticsLog.Write($"TryNativeClipboard aborted coherence tag={tag} attempt={i + 1}");
+                return false;
+            }
+
+            var sw = Stopwatch.StartNew();
+            if (trySet())
+            {
+                sw.Stop();
+                if (i > 0)
+                    ClipboardDiagnosticsLog.Write($"TryNativeClipboard OK after retry i={i} tag={tag} elapsedMs={sw.ElapsedMilliseconds}");
+                return true;
+            }
+            sw.Stop();
+            ClipboardDiagnosticsLog.Write(
+                $"TryNativeClipboard fail attempt={i + 1}/{maxRetries} tag={tag} elapsedMs={sw.ElapsedMilliseconds} holder={Win32.DescribeClipboardHolder()}");
+
+            if (i >= maxRetries - 1) break;
+
+            if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
+            {
+                ClipboardDiagnosticsLog.Write($"TryNativeClipboard aborted coherence before retry delay tag={tag}");
+                return false;
+            }
+
+            if (hwnd != IntPtr.Zero && Win32.TryEmptyClipboardAfterOpen(hwnd))
+                ClipboardDiagnosticsLog.Write($"TryNativeClipboard reNudge tag={tag} afterAttempt={i + 1}");
+
+            await Task.Delay(ComputeClipboardRetryDelayMs(i, baseDelayMs));
+        }
+        return false;
+    }
+
+    private static async Task<bool> TrySetClipboardImageWithNativeFallbackAsync(
+        BitmapSource bitmap,
+        byte[]? pngFallbackBytes,
+        IntPtr hwnd,
+        int maxRetries,
+        int baseDelayMs)
+    {
+        var dib = CreateDibBytesFromBitmapSource(bitmap);
+        if (dib != null)
+        {
+            var ok = await TryNativeClipboardWithRetriesAsync(
+                $"SetDib {bitmap.PixelWidth}x{bitmap.PixelHeight} bytes={dib.Length}",
+                () => Win32.TrySetClipboardDibNative(dib, hwnd),
+                hwnd,
+                maxRetries,
+                baseDelayMs);
+            if (ok) return true;
+            ClipboardDiagnosticsLog.Write(
+                $"TrySetClipboardDibNative GAVE_UP holder={Win32.DescribeClipboardHolder()} → try native HDROP");
+        }
+
+        if (pngFallbackBytes is { Length: > 0 })
+        {
+            string? tmpPath = null;
+            try
+            {
+                var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+                Directory.CreateDirectory(dir);
+                tmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
+                File.WriteAllBytes(tmpPath, pngFallbackBytes);
+
+                var ok = await TryNativeClipboardWithRetriesAsync(
+                    "SetFileDropListNative imageFallback",
+                    () => Win32.TrySetClipboardFileDropListNative(new[] { tmpPath }, hwnd),
+                    hwnd,
+                    maxRetries,
+                    baseDelayMs);
+                if (ok)
+                {
+                    ClipboardDiagnosticsLog.Write($"paste image native HDROP ok \"{tmpPath}\"");
+                    return true;
+                }
+
+                try { File.Delete(tmpPath); } catch { /* ignore */ }
+                tmpPath = null;
+            }
+            catch (Exception ex)
+            {
+                ClipboardDiagnosticsLog.Write($"paste image native HDROP EX {ex.GetType().Name}: {ex.Message}");
+                if (tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
+            }
+
+            ClipboardDiagnosticsLog.Write(
+                $"TrySetClipboardFileDropListNative GAVE_UP holder={Win32.DescribeClipboardHolder()} → fallback OLE SetImage");
+        }
+
+        var oleImageOk = await TrySetClipboardAsync(
+            () => System.Windows.Clipboard.SetImage(bitmap),
+            $"SetImage-OLE {bitmap.PixelWidth}x{bitmap.PixelHeight}",
+            maxRetries: maxRetries,
+            delayMs: baseDelayMs,
+            clipNudgeHwnd: hwnd);
+        if (oleImageOk || pngFallbackBytes is not { Length: > 0 }) return oleImageOk;
+
+        string? oleTmpPath = null;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
+            Directory.CreateDirectory(dir);
+            oleTmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
+            File.WriteAllBytes(oleTmpPath, pngFallbackBytes);
+            var flFb = new StringCollection();
+            flFb.Add(oleTmpPath);
+            var oleFbOk = await TrySetClipboardAsync(
+                () => System.Windows.Clipboard.SetFileDropList(flFb),
+                "SetFileDropList-OLE imageFallback",
+                maxRetries: maxRetries,
+                delayMs: baseDelayMs,
+                clipNudgeHwnd: hwnd);
+            if (!oleFbOk)
+            {
+                try { File.Delete(oleTmpPath); } catch { /* ignore */ }
+            }
+            else
+                ClipboardDiagnosticsLog.Write($"paste image OLE HDROP fallback ok \"{oleTmpPath}\"");
+            return oleFbOk;
+        }
+        catch (Exception ex)
+        {
+            ClipboardDiagnosticsLog.Write($"paste image OLE HDROP fallback EX {ex.GetType().Name}: {ex.Message}");
+            if (oleTmpPath != null) try { File.Delete(oleTmpPath); } catch { /* ignore */ }
+            return false;
+        }
+    }
+
+    private static async Task<bool> TrySetClipboardFileDropListWithNativeFallbackAsync(
+        IReadOnlyList<string> paths,
+        string logTag,
+        IntPtr hwnd,
+        int maxRetries,
+        int baseDelayMs,
+        Func<bool>? canContinueBeforeEachAttempt = null)
+    {
+        var ok = await TryNativeClipboardWithRetriesAsync(
+            $"SetFileDropListNative {logTag}",
+            () => Win32.TrySetClipboardFileDropListNative(paths, hwnd),
+            hwnd,
+            maxRetries,
+            baseDelayMs,
+            canContinueBeforeEachAttempt);
+        if (ok) return true;
+
+        ClipboardDiagnosticsLog.Write(
+            $"TrySetClipboardFileDropListNative GAVE_UP tag={logTag} holder={Win32.DescribeClipboardHolder()} → fallback OLE");
+        var fl = new StringCollection();
+        foreach (var p in paths) fl.Add(p);
+        return await TrySetClipboardAsync(
+            () => System.Windows.Clipboard.SetFileDropList(fl),
+            $"SetFileDropList-OLE {logTag}",
+            maxRetries: maxRetries,
+            delayMs: baseDelayMs,
+            clipNudgeHwnd: hwnd,
+            canContinueBeforeEachAttempt: canContinueBeforeEachAttempt);
+    }
+
     private static async Task<bool> TrySetClipboardAsync(
         Action setAction,
         string logOp,
-        int maxRetries = 2,
-        int delayMs = 40,
+        int maxRetries = 6,
+        int delayMs = 60,
         IntPtr clipNudgeHwnd = default,
         Func<bool>? canContinueBeforeEachAttempt = null)
     {
@@ -5631,19 +5869,24 @@ public partial class PopupWindow : Window
                 ClipboardDiagnosticsLog.Write($"TrySetClipboard aborted coherence op={logOp} attempt={i + 1}");
                 return false;
             }
+            var sw = Stopwatch.StartNew();
             try
             {
                 Win32.CloseClipboard();
                 setAction();
+                sw.Stop();
                 if (i > 0)
-                    ClipboardDiagnosticsLog.Write($"TrySetClipboard OK after retry i={i} op={logOp}");
+                    ClipboardDiagnosticsLog.Write($"TrySetClipboard OK after retry i={i} op={logOp} elapsedMs={sw.ElapsedMilliseconds}");
                 return true;
             }
             catch (Exception ex)
             {
+                sw.Stop();
                 last = ex;
                 var hr = ex is COMException com ? $" hr=0x{(uint)com.HResult:X8}" : "";
-                ClipboardDiagnosticsLog.Write($"TrySetClipboard fail attempt={i + 1}/{maxRetries} op={logOp} {ex.GetType().Name}: {ex.Message}{hr}");
+                var holder = IsClipboardCantOpen(ex) ? $" holder={Win32.DescribeClipboardHolder()}" : "";
+                ClipboardDiagnosticsLog.Write(
+                    $"TrySetClipboard fail attempt={i + 1}/{maxRetries} op={logOp} elapsedMs={sw.ElapsedMilliseconds}{holder} {ex.GetType().Name}: {ex.Message}{hr}");
                 if (i >= maxRetries - 1) break;
                 if (canContinueBeforeEachAttempt != null && !canContinueBeforeEachAttempt())
                 {
@@ -5652,10 +5895,11 @@ public partial class PopupWindow : Window
                 }
                 if (IsClipboardCantOpen(ex) && clipNudgeHwnd != IntPtr.Zero && Win32.TryEmptyClipboardAfterOpen(clipNudgeHwnd))
                     ClipboardDiagnosticsLog.Write($"TrySetClipboard reNudge op={logOp} afterAttempt={i + 1}");
-                await Task.Delay(delayMs);
+                await Task.Delay(ComputeClipboardRetryDelayMs(i, delayMs));
             }
         }
-        ClipboardDiagnosticsLog.Write($"TrySetClipboard GAVE_UP op={logOp} last={last?.GetType().Name}: {last?.Message}");
+        var giveUpHolder = last != null && IsClipboardCantOpen(last) ? $" holder={Win32.DescribeClipboardHolder()}" : "";
+        ClipboardDiagnosticsLog.Write($"TrySetClipboard GAVE_UP op={logOp}{giveUpHolder} last={last?.GetType().Name}: {last?.Message}");
         return false;
     }
 
@@ -5743,8 +5987,8 @@ public partial class PopupWindow : Window
 
         _isSettingClipboard = true;
         bool clipboardOk = false;
-        var clipRetries = noSegmentDelays ? 8 : 2;
-        var clipRetryDelayMs = noSegmentDelays ? 60 : 40;
+        var clipRetries = noSegmentDelays ? 8 : 6;
+        var clipRetryDelayMs = 60;
         try
         {
             switch (item.Type)
@@ -5754,12 +5998,11 @@ public partial class PopupWindow : Window
                     var clipText = sendNewlineAfterTextWhenCtrlEnterBatch && noSegmentDelays
                         ? item.TextContent! + Environment.NewLine
                         : item.TextContent!;
-                    clipboardOk = await TrySetClipboardAsync(
-                        () => System.Windows.Clipboard.SetText(clipText),
-                        $"SetText len={clipText.Length}",
+                    clipboardOk = await TrySetClipboardTextWithNativeFallbackAsync(
+                        clipText,
+                        _hwnd,
                         maxRetries: clipRetries,
-                        delayMs: clipRetryDelayMs,
-                        clipNudgeHwnd: _hwnd);
+                        baseDelayMs: clipRetryDelayMs);
                     break;
                 }
                 case EntryType.Image:
@@ -5780,52 +6023,20 @@ public partial class PopupWindow : Window
                     if (bi.CanFreeze) bi.Freeze();
                     ClipboardDiagnosticsLog.Write(
                         $"paste image loadMs={swDec.ElapsedMilliseconds} frame={bi.PixelWidth}x{bi.PixelHeight} storedPng={item.ImageData?.Length ?? 0}");
-                    clipboardOk = await TrySetClipboardAsync(
-                        () => System.Windows.Clipboard.SetImage(bi),
-                        $"SetImage {bi.PixelWidth}x{bi.PixelHeight}",
+                    clipboardOk = await TrySetClipboardImageWithNativeFallbackAsync(
+                        bi,
+                        item.ImageData,
+                        _hwnd,
                         maxRetries: clipRetries,
-                        delayMs: clipRetryDelayMs,
-                        clipNudgeHwnd: _hwnd);
-                    if (!clipboardOk && item.ImageData is { Length: > 0 })
-                    {
-                        string? tmpPath = null;
-                        try
-                        {
-                            var dir = Path.Combine(Path.GetTempPath(), "ClipboardX");
-                            Directory.CreateDirectory(dir);
-                            tmpPath = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmss_fff}_fb.png");
-                            File.WriteAllBytes(tmpPath, item.ImageData);
-                            var flFb = new StringCollection();
-                            flFb.Add(tmpPath);
-                            clipboardOk = await TrySetClipboardAsync(
-                                () => System.Windows.Clipboard.SetFileDropList(flFb),
-                                "SetFileDropList imageFallback",
-                                maxRetries: clipRetries,
-                                delayMs: clipRetryDelayMs,
-                                clipNudgeHwnd: _hwnd);
-                            if (!clipboardOk)
-                            {
-                                try { File.Delete(tmpPath); } catch { /* ignore */ }
-                            }
-                            else
-                                ClipboardDiagnosticsLog.Write($"paste image fallback SetFileDropList ok \"{tmpPath}\"");
-                        }
-                        catch (Exception ex)
-                        {
-                            ClipboardDiagnosticsLog.Write($"paste image fallback EX {ex.GetType().Name}: {ex.Message}");
-                            if (tmpPath != null) try { File.Delete(tmpPath); } catch { /* ignore */ }
-                        }
-                    }
+                        baseDelayMs: clipRetryDelayMs);
                     break;
                 case EntryType.Files:
-                    var fl = new StringCollection();
-                    fl.AddRange(item.FilePaths!);
-                    clipboardOk = await TrySetClipboardAsync(
-                        () => System.Windows.Clipboard.SetFileDropList(fl),
-                        $"SetFileDropList count={fl.Count} {SummarizeFileDropForLog(item.FilePaths!)}",
+                    clipboardOk = await TrySetClipboardFileDropListWithNativeFallbackAsync(
+                        item.FilePaths!,
+                        $"count={item.FilePaths!.Length} {SummarizeFileDropForLog(item.FilePaths!)}",
+                        _hwnd,
                         maxRetries: clipRetries,
-                        delayMs: clipRetryDelayMs,
-                        clipNudgeHwnd: _hwnd);
+                        baseDelayMs: clipRetryDelayMs);
                     break;
             }
         }
@@ -5988,8 +6199,9 @@ public partial class PopupWindow : Window
 
     /// <summary>
     /// 将临时文件路径写入剪贴板文件列表并模拟粘贴，供资源管理器接收。
+    /// 返回 true 表示成功且调用方应推迟清 <see cref="_pasteInProgress"/>（后台回波窗口）。
     /// </summary>
-    private async Task CompletePasteTempFileToExplorerAsync(string path, string beginLogDetail, string setClipboardLogOp)
+    private async Task<bool> CompletePasteTempFileToExplorerAsync(string path, string beginLogDetail, string setClipboardLogOp)
     {
         if (_targetWindow != IntPtr.Zero && !Win32.IsWindow(_targetWindow))
             _targetWindow = IntPtr.Zero;
@@ -6001,19 +6213,17 @@ public partial class PopupWindow : Window
             HidePopup();
         if (_targetWindow != IntPtr.Zero)
             Win32.SetForegroundWindowAggressive(_targetWindow);
-        await Task.Delay(85);
-        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
 
         if (_hwnd != IntPtr.Zero)
             Win32.TryEmptyClipboardAfterOpen(_hwnd);
 
         _isSettingClipboard = true;
-        var fl = new StringCollection();
-        fl.Add(path);
-        bool clipboardOk = await TrySetClipboardAsync(
-            () => System.Windows.Clipboard.SetFileDropList(fl),
+        bool clipboardOk = await TrySetClipboardFileDropListWithNativeFallbackAsync(
+            new[] { path },
             setClipboardLogOp,
-            clipNudgeHwnd: _hwnd);
+            _hwnd,
+            maxRetries: 8,
+            baseDelayMs: 60);
 
         ClipboardDiagnosticsLog.Write($"pasteAsFile END clipboardOk={clipboardOk}");
 
@@ -6021,19 +6231,22 @@ public partial class PopupWindow : Window
         {
             _isSettingClipboard = false;
             try { File.Delete(path); } catch { /* ignore */ }
-        }
-        else
-        {
-            _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
+            return false;
         }
 
-        if (clipboardOk)
+        MarkSelfWroteClipboard();
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.SystemIdle, () => _isSettingClipboard = false);
+
+        SendPasteToTarget();
+
+        const int postEchoMs = 600;
+        _ = Task.Delay(postEchoMs).ContinueWith(_ =>
         {
-            await Task.Delay(60);
-            SendPasteToTarget();
-            await Task.Delay(600);
-            ClipboardDiagnosticsLog.Write("pasteAsFile post-echo suppression window elapsed");
-        }
+            _pasteInProgress = false;
+            ClipboardDiagnosticsLog.Write($"pasteAsFile post-echo suppression window elapsed (ms={postEchoMs})");
+        }, TaskScheduler.Default);
+
+        return true;
     }
 
     /// <summary>
@@ -6044,6 +6257,7 @@ public partial class PopupWindow : Window
         if (ItemsList.SelectedItem is not ClipboardEntry item || item.Type != EntryType.Image) return;
         if (item.ImageData is not { Length: > 0 }) return;
         _pasteInProgress = true;
+        var deferClear = false;
         try
         {
         ClearPendingDelete();
@@ -6071,14 +6285,15 @@ public partial class PopupWindow : Window
         }
         catch { return; }
 
-        await CompletePasteTempFileToExplorerAsync(
+        deferClear = await CompletePasteTempFileToExplorerAsync(
             path,
             $"pngBytes={item.ImageData?.Length ?? 0}",
-            $"SetFileDropList explorer_temp_png file=\"{path}\"");
+            $"explorer_temp_png file=\"{path}\"");
         }
         finally
         {
-            _pasteInProgress = false;
+            if (!deferClear)
+                _pasteInProgress = false;
         }
     }
 
@@ -6092,6 +6307,7 @@ public partial class PopupWindow : Window
         if (string.IsNullOrWhiteSpace(text) || !IsWellFormedJson(text)) return;
 
         _pasteInProgress = true;
+        var deferClear = false;
         try
         {
         ClearPendingDelete();
@@ -6116,14 +6332,15 @@ public partial class PopupWindow : Window
         }
         catch { return; }
 
-        await CompletePasteTempFileToExplorerAsync(
+        deferClear = await CompletePasteTempFileToExplorerAsync(
             path,
             $"jsonChars={text.Length}",
-            $"SetFileDropList explorer_temp_json file=\"{path}\"");
+            $"explorer_temp_json file=\"{path}\"");
         }
         finally
         {
-            _pasteInProgress = false;
+            if (!deferClear)
+                _pasteInProgress = false;
         }
     }
 
@@ -6137,6 +6354,7 @@ public partial class PopupWindow : Window
         if (string.IsNullOrEmpty(text) || IsWellFormedJson(text)) return;
 
         _pasteInProgress = true;
+        var deferClear = false;
         try
         {
         ClearPendingDelete();
@@ -6161,14 +6379,15 @@ public partial class PopupWindow : Window
         }
         catch { return; }
 
-        await CompletePasteTempFileToExplorerAsync(
+        deferClear = await CompletePasteTempFileToExplorerAsync(
             path,
             $"textChars={text.Length}",
-            $"SetFileDropList explorer_temp_txt file=\"{path}\"");
+            $"explorer_temp_txt file=\"{path}\"");
         }
         finally
         {
-            _pasteInProgress = false;
+            if (!deferClear)
+                _pasteInProgress = false;
         }
     }
 

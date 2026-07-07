@@ -329,6 +329,10 @@ dotnet publish ClipboardManager.csproj -c Release -r win-x64 \
 
 - **设置页布局修复**：「退出时自动清空历史」行不再被挤压为 10px 高度
 
+### v1.9.4
+
+- **粘贴稳定性**：单条/批量/作为文件粘贴优先原生剪贴板 API，减少 OLE 争用导致的卡顿与 `CLIPBRD_E_CANT_OPEN` 失败；失败日志可查看占用进程
+
 ### v1.9.3
 
 - **多图预览导航**：Files 条目含多张图片时，预览气泡可 ← → 或点击导航条切换查看
