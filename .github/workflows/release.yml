@@ -23,10 +23,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
@@ -68,7 +68,7 @@ jobs:
 
       # upload-artifact 下载时本身会生成一层 ZIP；直接上传发布目录，避免 ZIP 套 ZIP。
       - name: 上传 FileJumpOnly 无运行时产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ClipboardX-filejump-${{ inputs.version }}-win-x64-no-runtime
           path: publish/fdd/*
@@ -97,10 +97,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
@@ -180,14 +180,14 @@ jobs:
           Copy-Item $setupSc "ClipboardX-$v-setup-self-contained.exe"
 
       - name: 上传 zip 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact_prefix }}-artifacts
           path: ${{ matrix.artifact_prefix }}-*.zip
 
       - name: 上传 Inno 安装包（仅完整版）
         if: matrix.flavor == 'Full'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ClipboardX-inno-installer
           path: |
@@ -203,7 +203,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Version from tag
         id: ver

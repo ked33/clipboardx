@@ -60,6 +60,8 @@
     <Compile Remove="Services\EverythingIpc.cs" />
     <Compile Remove="Services\ExplorerQuickFindController.cs" />
     <Compile Remove="Search\PinyinSearchIndex.cs" />
+    <Compile Remove="Views\ExplorerQuickFindWindow.xaml.cs" />
+    <Page Remove="Views\ExplorerQuickFindWindow.xaml" />
   </ItemGroup>
 
   <!-- 文件跳转独立版不编译 SQLite 历史库及依赖该库的 OCR 队列。 -->

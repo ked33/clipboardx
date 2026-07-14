@@ -12,6 +12,8 @@ internal sealed class FileJumpHost : IDisposable
 {
     private static FileJumpHost? s_keyboardOwner;
     private static readonly Win32.LowLevelKeyboardProc s_keyboardThunk = KeyboardHookProc;
+    private static FileJumpHost? s_foregroundOwner;
+    private static readonly Win32.WinEventDelegate s_foregroundThunk = ForegroundChanged;
 
     private readonly Dispatcher _dispatcher;
     private AppSettings? _settings;
@@ -20,7 +22,14 @@ internal sealed class FileJumpHost : IDisposable
     private uint _listHotkeyModifiers;
     private uint _listHotkeyKey;
     private IntPtr _keyboardHook;
+    private IntPtr _foregroundHook;
     private int _collectGeneration;
+    private int _externalPathCaptureGeneration;
+    private string _latestExternalPath = "";
+    private long _externalPathVersion;
+    private readonly HashSet<IntPtr> _seenDialogRoots = new();
+    private IntPtr _lastAutoSyncDialogRoot;
+    private long _lastAutoSyncVersion;
     private long _lastHotkeyTick;
     private FileDialogJumpPickerWindow? _activePicker;
 
@@ -30,6 +39,7 @@ internal sealed class FileJumpHost : IDisposable
     {
         ApplySettings(settings);
         InstallKeyboardHook();
+        InstallForegroundHook();
     }
 
     public void ApplySettings(AppSettings settings)
@@ -49,6 +59,112 @@ internal sealed class FileJumpHost : IDisposable
             Win32.WH_KEYBOARD_LL, s_keyboardThunk, Win32.GetModuleHandle(null), 0);
         if (_keyboardHook == IntPtr.Zero && ReferenceEquals(s_keyboardOwner, this))
             s_keyboardOwner = null;
+    }
+
+    private void InstallForegroundHook()
+    {
+        if (_foregroundHook != IntPtr.Zero) return;
+        s_foregroundOwner = this;
+        _foregroundHook = Win32.SetWinEventHook(
+            Win32.EVENT_SYSTEM_FOREGROUND, Win32.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero, s_foregroundThunk, 0, 0,
+            Win32.WINEVENT_OUTOFCONTEXT | Win32.WINEVENT_SKIPOWNPROCESS);
+        if (_foregroundHook == IntPtr.Zero && ReferenceEquals(s_foregroundOwner, this))
+            s_foregroundOwner = null;
+    }
+
+    private static void ForegroundChanged(
+        IntPtr hook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint threadId, uint eventTime)
+    {
+        var owner = s_foregroundOwner;
+        if (owner == null || hwnd == IntPtr.Zero) return;
+        owner._dispatcher.BeginInvoke(() => owner.OnForegroundChanged(hwnd), DispatcherPriority.Background);
+    }
+
+    private void OnForegroundChanged(IntPtr hwnd)
+    {
+        if (_settings == null || hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd)) return;
+
+        var root = Win32.GetAncestor(hwnd, Win32.GA_ROOT);
+        if (root == IntPtr.Zero) root = hwnd;
+        var windowClass = Win32.GetWindowClassName(root);
+
+        // 只跟踪明确支持的 Explorer 与 DOpus；不枚举其它窗口，也不进行通用 UIA 树扫描。
+        if (windowClass is "CabinetWClass" or "ExploreWClass" or "dopus.lister")
+        {
+            CaptureExternalPath(root);
+            return;
+        }
+
+        // 常规窗口先走快速类名判断；仅自定义规则命中时补充进入解析，避免每次前台切换都做重型探测。
+        if (!FileDialogJumpHelper.QuickMayBeUnderFileDialog(hwnd)
+            && CustomFileDialogStore.FindMatchingRule(root) == null)
+            return;
+
+        var dialog = FileDialogJumpHelper.ResolveFileDialogHwndFromWindowOrAncestor(hwnd);
+        if (dialog != IntPtr.Zero)
+            TryAutoSyncLatestExternalPath(dialog);
+    }
+
+    private void CaptureExternalPath(IntPtr managerHwnd)
+    {
+        var generation = Interlocked.Increment(ref _externalPathCaptureGeneration);
+        void Capture()
+        {
+            string path;
+            try
+            {
+                path = FileManagerPathCollector.TryGetFolderForWindow(managerHwnd, fresh: true) ?? "";
+            }
+            catch
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+            _dispatcher.BeginInvoke(() =>
+            {
+                if (generation != Volatile.Read(ref _externalPathCaptureGeneration)) return;
+                if (string.Equals(_latestExternalPath, path, StringComparison.OrdinalIgnoreCase)) return;
+                _latestExternalPath = path;
+                _externalPathVersion++;
+            }, DispatcherPriority.Background);
+        }
+
+        var thread = new Thread(Capture)
+        {
+            IsBackground = true,
+            Name = "ClipboardX-FileJump-TrackPath",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+    }
+
+    private void TryAutoSyncLatestExternalPath(IntPtr dialog)
+    {
+        var dialogRoot = Win32.GetAncestor(dialog, Win32.GA_ROOT);
+        if (dialogRoot == IntPtr.Zero) dialogRoot = dialog;
+        // 首次打开只登记；必须离开并在 Explorer/DOpus 路径发生变化后再次返回，才执行自动同步。
+        if (_seenDialogRoots.Add(dialogRoot)) return;
+
+        var settings = _settings;
+        var path = _latestExternalPath;
+        var version = _externalPathVersion;
+        if (settings == null || string.IsNullOrEmpty(path) || version == 0) return;
+        if (_lastAutoSyncDialogRoot == dialogRoot && _lastAutoSyncVersion == version) return;
+
+        _lastAutoSyncDialogRoot = dialogRoot;
+        _lastAutoSyncVersion = version;
+        var allowInject = settings.EnableShellNavigateInject;
+        var thread = new Thread(() =>
+            FileDialogJumpHelper.TryNavigateToFolder(dialog, path, allowInject))
+        {
+            IsBackground = true,
+            Name = "ClipboardX-FileJump-AutoSync",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
     }
 
     private static IntPtr KeyboardHookProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -202,6 +318,13 @@ internal sealed class FileJumpHost : IDisposable
         }
         if (ReferenceEquals(s_keyboardOwner, this))
             s_keyboardOwner = null;
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
+        if (ReferenceEquals(s_foregroundOwner, this))
+            s_foregroundOwner = null;
         try { _activePicker?.Close(); } catch { }
         _activePicker = null;
     }
