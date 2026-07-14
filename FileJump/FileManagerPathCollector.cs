@@ -10,10 +10,8 @@ using System.Windows.Automation;
 namespace ClipboardManager;
 
 /// <summary>
-/// 枚举资源管理器 / Total Commander / XYplorer / Directory Opus 等窗口的路径；
-/// 思路对齐 QuickSwitch（<see href="https://github.com/gepruts/QuickSwitch"/>）的 ShowMenu / Get_Zfolder。
-/// 另对 FreeCommander / Double Commander / Q-Dir / OneCommander / Multi Commander / Tablacus / xplorer² 等无公开消息 API 的窗口，
-/// 在进程白名单内通过有限的 UI Automation 扫描提取可验证的本地目录路径（与社区脚本常见做法一致，弱于专用协议）。
+/// 枚举 Windows 资源管理器与 Directory Opus 窗口的路径。
+/// FileJumpOnly 精简版不再扫描其他第三方文件管理器的 UI Automation 树。
 /// </summary>
 internal static class FileManagerPathCollector
 {
@@ -255,16 +253,6 @@ internal static class FileManagerPathCollector
             var cls = Win32.GetWindowClassName(h);
             switch (cls)
             {
-                case "TTOTAL_CMD":
-                    if (TryTotalCommanderPathFromClip(h, TcmCopySrcPathToClip, out var tc1))
-                        Add("Total Commander (源)", tc1);
-                    if (TryTotalCommanderPathFromClip(h, TcmCopyTrgPathToClip, out var tc2))
-                        Add("Total Commander (目标)", tc2);
-                    break;
-                case "ThunderRT6FormDC":
-                    if (TryXyplorerPathFromClip(h, "::copytext get('path', a);", out var xya))
-                        Add("XYplorer", xya);
-                    break;
                 case "dopus.lister":
                     opusXml ??= TryRunDopusInfoXml(h);
                     foreach (var (pl, pp) in ParseDopusListerPaths(opusXml, h))
@@ -300,33 +288,6 @@ internal static class FileManagerPathCollector
                     break;
                 }
                 default:
-                    if (skipAlternateUiAutomation) break;
-                    if (!TryGetProcessImagePath(h, exeByPid, out var altExe)) break;
-                    {
-                        var altProc = Path.GetFileNameWithoutExtension(altExe);
-                        if (!ShouldUseAlternateUiAutomation(altProc)) break;
-                        var altLabel = AlternateManagerDisplayLabel(altProc, altExe);
-                        if (altProc.StartsWith("q-dir", StringComparison.OrdinalIgnoreCase))
-                        {
-                            swStage.Restart();
-                            alternateUiCount++;
-                            foreach (var p in CollectQDirFolderPathsFromAutomation(h))
-                                Add(altLabel, p);
-                            alternateUiMs += swStage.ElapsedMilliseconds;
-                            RecordSlowStage("alternate_qdir_uia", swStage.ElapsedMilliseconds, 60,
-                                $"proc={altProc}");
-                        }
-                        else
-                        {
-                            swStage.Restart();
-                            alternateUiCount++;
-                            if (TryFindBestFolderPathInAutomationTree(h, out var alt))
-                                Add(altLabel, alt);
-                            alternateUiMs += swStage.ElapsedMilliseconds;
-                            RecordSlowStage("alternate_uia", swStage.ElapsedMilliseconds, 60,
-                                $"proc={altProc}");
-                        }
-                    }
                     break;
             }
 
@@ -347,11 +308,9 @@ internal static class FileManagerPathCollector
     {
         return Win32.GetWindowClassName(h) switch
         {
-            "TTOTAL_CMD" => TryTotalCommanderPathFromClip(h, TcmCopySrcPathToClip, out var p) ? p : null,
-            "ThunderRT6FormDC" => TryXyplorerPathFromClip(h, "::copytext get('path', a);", out var x) ? x : null,
             "CabinetWClass" or "ExploreWClass" => TryGetExplorerPathForHwnd(h),
             "dopus.lister" => ParseDopusListerPaths(TryRunDopusInfoXml(h), h).Select(t => t.path).FirstOrDefault(),
-            _ => TryGetFolderForAlternateUiManager(h)
+            _ => null
         };
     }
 

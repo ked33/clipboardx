@@ -60,8 +60,6 @@ public class ClipboardEntry : INotifyPropertyChanged
 
     public void RaiseOcrDisplayPropertiesChanged()
     {
-        _pinyinCacheKey = null;
-        _pinyinSearchBlob = null;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SearchableText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubInfo)));
@@ -287,25 +285,6 @@ public class ClipboardEntry : INotifyPropertyChanged
         }
     }
 
-    private string? _pinyinCacheKey;
-    private string? _pinyinSearchBlob;
-
-    /// <summary>
-    /// 全拼与首字母拼接后的检索串（小写、无空格），惰性计算并随 SearchableText 失效。
-    /// </summary>
-    public string PinyinSearchBlob
-    {
-        get
-        {
-            var key = SearchableText;
-            if (_pinyinSearchBlob != null && string.Equals(_pinyinCacheKey, key, StringComparison.Ordinal))
-                return _pinyinSearchBlob;
-            _pinyinCacheKey = key;
-            _pinyinSearchBlob = PinyinSearchIndex.BuildBlob(key);
-            return _pinyinSearchBlob;
-        }
-    }
-
     private string BuildImageSearchableText()
     {
         var dim = $"image 图片 {ImageWidth}x{ImageHeight}";
@@ -315,9 +294,7 @@ public class ClipboardEntry : INotifyPropertyChanged
     public bool MatchesSearch(string query)
     {
         if (string.IsNullOrEmpty(query)) return true;
-        if (SearchableText.Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
-        var py = PinyinSearchBlob;
-        return py.Length > 0 && py.Contains(query, StringComparison.OrdinalIgnoreCase);
+        return SearchableText.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
     public string TimeAgo

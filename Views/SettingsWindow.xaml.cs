@@ -70,6 +70,16 @@ public partial class SettingsWindow : Window
         _settings = settings;
         _originalTheme = settings.Theme;
 
+        FileJumpAutoOpenLabel.Visibility = Visibility.Collapsed;
+        FileJumpAutoOpenBox.Visibility = Visibility.Collapsed;
+        FileJumpAutoNavigateLabel.Visibility = Visibility.Collapsed;
+        FileJumpAutoNavigateBox.Visibility = Visibility.Collapsed;
+        FileJumpAutoSyncLabel.Visibility = Visibility.Collapsed;
+        FileJumpAutoSyncBox.Visibility = Visibility.Collapsed;
+        FileJumpEverythingFolderLabel.Visibility = Visibility.Collapsed;
+        FileJumpEverythingFolderBox.Visibility = Visibility.Collapsed;
+        HideExplorerExperimentalSection();
+
 #if !CLIPX_CLIPBOARD
         ClipboardTab.Visibility = Visibility.Collapsed;
         MainTabs.SelectedItem = FileJumpTab;
@@ -1107,6 +1117,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+#if CLIPX_CLIPBOARD
         if (_pendingModifiers == _pendingFileJumpModifiers && _pendingKey == _pendingFileJumpKey)
         {
             System.Windows.MessageBox.Show("呼出快捷键与文件对话框跳转键不能相同。", "提示",
@@ -1127,8 +1138,9 @@ public partial class SettingsWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+#endif
 
-#if CLIPX_FILEJUMP
+#if CLIPX_FILEJUMP && CLIPX_CLIPBOARD
         if (!int.TryParse(ExplorerEverythingMaxResultsBox.Text, out var explorerEvMax) || explorerEvMax < 1 || explorerEvMax > 2000)
         {
             System.Windows.MessageBox.Show("筛选最大条数应在 1 ~ 2000 之间", "提示",
@@ -1186,7 +1198,7 @@ public partial class SettingsWindow : Window
         _settings.FileJumpPickerEverythingFolderSearch = _pendingFileJumpPickerEverythingFolderSearch;
         _settings.RecentFolderMaxCount = recentMaxCount;
         _settings.RecentFolderAutoAddMinCount = recentAutoAddMin;
-#if CLIPX_FILEJUMP
+#if CLIPX_FILEJUMP && CLIPX_CLIPBOARD
         _settings.ExplorerEverythingQuickFindEnabled = _pendingExplorerEverythingQuickFind;
         _settings.ExplorerEverythingQuickFindMaxResults = explorerEvMax;
         _settings.ExplorerQuickFindOpenMode = _pendingExplorerQuickFindOpenMode;

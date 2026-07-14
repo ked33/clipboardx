@@ -4,7 +4,7 @@ using System.Windows;
 
 namespace ClipboardManager;
 
-/// <summary>跳转列表中的一行（动态路径 + 收藏），支持检索拼音与快捷标号。</summary>
+/// <summary>跳转列表中的一行（动态路径 + 收藏），支持检索与快捷标号。</summary>
 public sealed class FileJumpPickerRow : INotifyPropertyChanged
 {
     public FileJumpPickerRow(string sourceLabel, string path, bool isFavorite, string? phrase = null)
@@ -65,28 +65,10 @@ public sealed class FileJumpPickerRow : INotifyPropertyChanged
         return path[..headLen] + "…" + path[^tailLen..];
     }
 
-    private string? _pinyinCacheKey;
-    private string? _pinyinBlob;
-
-    public string PinyinSearchBlob
-    {
-        get
-        {
-            var key = SearchablePrimary;
-            if (_pinyinBlob != null && string.Equals(_pinyinCacheKey, key, StringComparison.Ordinal))
-                return _pinyinBlob;
-            _pinyinCacheKey = key;
-            _pinyinBlob = PinyinSearchIndex.BuildBlob(key);
-            return _pinyinBlob;
-        }
-    }
-
     public bool MatchesSearch(string query)
     {
         if (string.IsNullOrEmpty(query)) return true;
-        if (SearchablePrimary.Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
-        var py = PinyinSearchBlob;
-        return py.Length > 0 && py.Contains(query, StringComparison.OrdinalIgnoreCase);
+        return SearchablePrimary.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

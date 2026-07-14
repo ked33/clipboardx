@@ -120,11 +120,6 @@ public partial class FileDialogJumpPickerWindow : Window
     private readonly List<FileJumpPickerRow> _masterRows = new();
     private readonly BulkObservableCollection<FileJumpPickerRow> _displayRows = new();
 
-    private readonly List<string> _everythingFolderPaths = new();
-    private string _everythingPathsValidForQuery = "";
-    private int _everythingQueryGen;
-    private CancellationTokenSource? _everythingQueryCts;
-
     public string? SelectedPath { get; private set; }
     public IntPtr OwnerDialogHwnd => _fileDialogOwnerHwnd;
     public bool IsAutoForegroundStickyMode => _autoForegroundStickyMode;
@@ -156,7 +151,9 @@ public partial class FileDialogJumpPickerWindow : Window
         // 关闭时按用户「跟随对话框/鼠标」。autoForegroundStickyMode 自身就是自动弹出，必须贴。
         _dockBesideDialog = fileDialogOwnerHwnd != IntPtr.Zero
                             && (autoForegroundStickyMode
+#if CLIPX_CLIPBOARD
                                 || settings.FileJumpPickerOpenWhenDialogForeground
+#endif
                                 || FileJumpPickerFollowModes.IsDialog(settings.FileJumpPickerFollowMode));
         _collectorSnapshot = collectorItems.ToList();
 
@@ -212,8 +209,6 @@ public partial class FileDialogJumpPickerWindow : Window
                 _settings.FileJumpPickerHeight = ActualHeight;
             _settings.Save();
         }
-        _everythingQueryCts?.Cancel();
-        _everythingQueryCts = null;
         _dockFollowTimer?.Stop();
         _dockFollowTimer = null;
         _focusRetryTimer?.Stop();
@@ -851,17 +846,6 @@ public partial class FileDialogJumpPickerWindow : Window
         _firstVisibleIndex = 0;
 
         var query = _searchText.Trim();
-        if (string.IsNullOrEmpty(query) || !_settings.FileJumpPickerEverythingFolderSearch)
-        {
-            _everythingFolderPaths.Clear();
-            _everythingPathsValidForQuery = "";
-            _everythingQueryCts?.Cancel();
-        }
-        else if (!string.Equals(query, _everythingPathsValidForQuery, StringComparison.OrdinalIgnoreCase))
-        {
-            _everythingFolderPaths.Clear();
-            _everythingPathsValidForQuery = "";
-        }
 
         using (var _ = _displayRows.BeginBulkUpdate())
         {
@@ -882,21 +866,6 @@ public partial class FileDialogJumpPickerWindow : Window
             foreach (var r in sorted)
                 _displayRows.Add(r);
 
-            if (!string.IsNullOrEmpty(query)
-                && _settings.FileJumpPickerEverythingFolderSearch
-                && string.Equals(query, _everythingPathsValidForQuery, StringComparison.OrdinalIgnoreCase)
-                && _everythingFolderPaths.Count > 0)
-            {
-                var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var r in _displayRows)
-                    seenPaths.Add(r.Path);
-
-                foreach (var p in _everythingFolderPaths.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
-                {
-                    if (!seenPaths.Add(p)) continue;
-                    _displayRows.Add(new FileJumpPickerRow("everything", p, false));
-                }
-            }
         }
 
         _prevQuickIndexFirstVisible = -1; // 列表重建，重置索引缓存
@@ -922,63 +891,9 @@ public partial class FileDialogJumpPickerWindow : Window
                 ItemsList.ScrollIntoView(ItemsList.SelectedItem);
         }
 
-        if (!string.IsNullOrEmpty(query) && _settings.FileJumpPickerEverythingFolderSearch)
-            ScheduleEverythingFolderQuery(query);
-
         sw.Stop();
         PerfLog("refresh_filter", sw.ElapsedMilliseconds, 25,
             $"queryLen={query.Length} master={_masterRows.Count} display={_displayRows.Count}");
-    }
-
-    private void ScheduleEverythingFolderQuery(string queryForSchedule)
-    {
-        if (!_settings.FileJumpPickerEverythingFolderSearch || string.IsNullOrEmpty(queryForSchedule))
-        {
-            _everythingQueryCts?.Cancel();
-            return;
-        }
-
-        if (string.Equals(queryForSchedule, _everythingPathsValidForQuery, StringComparison.OrdinalIgnoreCase))
-            return;
-
-        _everythingQueryGen++;
-        var gen = _everythingQueryGen;
-        _everythingQueryCts?.Cancel();
-        _everythingQueryCts = new CancellationTokenSource();
-        var tok = _everythingQueryCts.Token;
-        var maxResults = Math.Clamp(_settings.ExplorerEverythingQuickFindMaxResults, 1, 2000);
-
-        // 早期 debounce 写到 140ms，对「换一段输入再按 Tab/字母」的交互而言体感很重。
-        // Everything IPC 文件夹检索单次开销通常 <10ms，节流 40ms 足以合并连按又不感知卡顿。
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                if (tok.WaitHandle.WaitOne(40)) return;
-                if (gen != _everythingQueryGen) return;
-
-                var list = new List<string>();
-                var ok = EverythingIpc.TryQueryFolderPaths(queryForSchedule, maxResults, list, out _);
-
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (gen != _everythingQueryGen) return;
-                    if (!string.Equals(_searchText.Trim(), queryForSchedule, StringComparison.Ordinal)) return;
-
-                    _everythingFolderPaths.Clear();
-                    if (ok)
-                        _everythingFolderPaths.AddRange(list);
-                    _everythingPathsValidForQuery = queryForSchedule;
-
-                    var pathKeep = (ItemsList.SelectedItem as FileJumpPickerRow)?.Path;
-                    RefreshFilter(preferPath: pathKeep);
-                }, DispatcherPriority.Background);
-            }
-            catch
-            {
-                /* ignore */
-            }
-        });
     }
 
     private int _prevQuickIndexFirstVisible = -1;
@@ -1231,7 +1146,11 @@ public partial class FileDialogJumpPickerWindow : Window
         {
             InstallDockOwnerFollowHooks();
             // WinEvent 提供实时跟随；timer 只兜底处理个别宿主不发 LOCATIONCHANGE 的场景。
-            _dockFollowTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            // 两个事件钩子都安装成功时降低轮询频率，避免列表长时间打开时每 500ms 重复读取窗口矩形。
+            var fallbackMs = _dockOwnerMoveSizeHook != IntPtr.Zero && _dockOwnerLocationHook != IntPtr.Zero
+                ? 1500
+                : 500;
+            _dockFollowTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(fallbackMs) };
             _dockFollowTimer.Tick += (_, _) => DockFollowTick();
             _dockFollowTimer.Start();
         }

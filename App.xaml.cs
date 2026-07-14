@@ -25,16 +25,13 @@ public partial class App : Application
     private BatchModeCycleHotkeyHost? _batchModeHotkeyHost;
 #endif
 #if CLIPX_FILEJUMP
-    private ExplorerQuickFindController? _explorerQuickFind;
-#if !CLIPX_CLIPBOARD
     private FileJumpHost? _fileJumpHost;
-#endif
 #endif
     private AppSettings _settings = new();
     private static bool _probingAssemblyResolveRegistered;
 
     /// <summary>
-    /// 部分宿主下 <see cref="AppContext.BaseDirectory"/> 与主程序集所在目录不一致，会导致无法找到 NPinyin 等旁路 dll；
+    /// 部分宿主下 <see cref="AppContext.BaseDirectory"/> 与主程序集所在目录不一致，会导致无法找到旁路 dll；
     /// 从 <see cref="Assembly.Location"/> 目录补解析（单文件时 Location 为空，回退 BaseDirectory）。
     /// </summary>
     private static void RegisterProbingAssemblyResolve()
@@ -147,7 +144,9 @@ public partial class App : Application
         _popup.SettingsRequested += OpenSettings;
         _popup.BatchPasteModeChanged += (_, _) =>
             Dispatcher.Invoke(RefreshTrayIcon);
-#elif CLIPX_FILEJUMP
+#endif
+
+#if CLIPX_FILEJUMP
         _fileJumpHost = new FileJumpHost(Dispatcher);
         _fileJumpHost.Initialize(_settings);
 #endif
@@ -166,10 +165,6 @@ public partial class App : Application
 #if CLIPX_CLIPBOARD
         _popup.ShellForegroundMayOccludePopup += OnPopupShellForegroundMayOcclude;
 #endif
-#if CLIPX_FILEJUMP
-        SyncExplorerQuickFindHook();
-#endif
-        _ = CheckForUpdatesOnStartupAsync();
     }
 
     private void OnPopupShellForegroundMayOcclude()
@@ -424,17 +419,12 @@ public partial class App : Application
             _settings.BatchPasteMergeText = copy.BatchPasteMergeText;
             _settings.BatchQueueAutoSwitchToNormalAfterQueueDone = copy.BatchQueueAutoSwitchToNormalAfterQueueDone;
             _settings.PasteSimulationMode = PasteSimulationModes.Normalize(copy.PasteSimulationMode);
-#if CLIPX_FILEJUMP
-            _settings.ExplorerEverythingQuickFindEnabled = copy.ExplorerEverythingQuickFindEnabled;
-            _settings.ExplorerEverythingQuickFindMaxResults = copy.ExplorerEverythingQuickFindMaxResults;
-            _settings.FileJumpPickerEverythingFolderSearch = copy.FileJumpPickerEverythingFolderSearch;
-            SyncExplorerQuickFindHook();
-#endif
             StartupRegistration.Apply(_settings.RunAtStartup, _settings.RunAsAdministrator);
             _settings.Save();
 #if CLIPX_CLIPBOARD
             _popup?.ApplySettings(_settings);
-#elif CLIPX_FILEJUMP
+#endif
+#if CLIPX_FILEJUMP
             _fileJumpHost?.ApplySettings(_settings);
 #endif
 #if CLIPX_CLIPBOARD
@@ -483,22 +473,6 @@ public partial class App : Application
         _settings.BatchModeCycleHotkeyModifiers = _batchModeHotkeyHost.CurrentModifiers;
         _settings.BatchModeCycleHotkeyKey = _batchModeHotkeyHost.CurrentKey;
         _settings.Save();
-    }
-#endif
-
-#if CLIPX_FILEJUMP
-    /// <summary>按设置安装或卸载资源管理器内 Everything 筛选钩子。</summary>
-    private void SyncExplorerQuickFindHook()
-    {
-        if (!_settings.ExplorerEverythingQuickFindEnabled)
-        {
-            _explorerQuickFind?.Dispose();
-            _explorerQuickFind = null;
-            return;
-        }
-
-        _explorerQuickFind ??= new ExplorerQuickFindController(Dispatcher, _settings);
-        _explorerQuickFind.Start();
     }
 #endif
 
@@ -774,13 +748,10 @@ public partial class App : Application
 #endif
 #if CLIPX_CLIPBOARD
         _popup?.Cleanup();
-#elif CLIPX_FILEJUMP
-        _fileJumpHost?.Dispose();
-        _fileJumpHost = null;
 #endif
 #if CLIPX_FILEJUMP
-        _explorerQuickFind?.Dispose();
-        _explorerQuickFind = null;
+        _fileJumpHost?.Dispose();
+        _fileJumpHost = null;
 #endif
         if (_trayIcon != null)
         {

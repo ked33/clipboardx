@@ -46,7 +46,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NPinyin.Core" Version="3.0.0" />
     <PackageReference Include="Svg" Version="3.4.7" />
   </ItemGroup>
 
@@ -58,6 +57,9 @@
     <Compile Remove="ClipboardX.Core\**\*" />
     <Compile Remove="ClipboardX.Mac\**\*" />
     <Compile Remove="artifacts\**\*" />
+    <Compile Remove="Services\EverythingIpc.cs" />
+    <Compile Remove="Services\ExplorerQuickFindController.cs" />
+    <Compile Remove="Search\PinyinSearchIndex.cs" />
   </ItemGroup>
 
   <!-- 文件跳转独立版不编译 SQLite 历史库及依赖该库的 OCR 队列。 -->
@@ -75,8 +77,6 @@
   <ItemGroup Condition="'$(ClipboardXProduct)' != 'ClipboardOnly'">
     <None Include="native\ShellNavigate\bin\x64\Release\ClipboardXShellNavigate.dll" Link="ClipboardXShellNavigate.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\ShellNavigate\bin\x64\Release\ClipboardXShellNavigate.dll')" />
     <None Include="native\ShellNavigate\bin\Win32\Release\ClipboardXShellNavigate32.dll" Link="ClipboardXShellNavigate32.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\ShellNavigate\bin\Win32\Release\ClipboardXShellNavigate32.dll')" />
-    <!-- voidtools SDK：与程序集同目录加载；见 native\ 下说明 -->
-    <None Include="native\Everything64.dll" Link="Everything64.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\Everything64.dll')" />
   </ItemGroup>
 
 </Project>

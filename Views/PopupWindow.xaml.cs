@@ -26,7 +26,6 @@ namespace ClipboardManager;
 public partial class PopupWindow : Window
 {
     private const int HotkeyId = 9001;
-    private const int HotkeyJumpLastFolderId = 9002;
 
     private readonly List<ClipboardEntry> _allItems = new();
     private readonly ObservableCollection<ClipboardEntry> _displayItems = new();
@@ -350,22 +349,8 @@ public partial class PopupWindow : Window
         }
 #endif
 
-#if CLIPX_FILEJUMP
-        if (!Win32.RegisterHotKey(_hwnd, HotkeyJumpLastFolderId,
-                _fileJumpHotkeyModifiers | Win32.MOD_NOREPEAT, _fileJumpHotkeyKey))
-        {
-            System.Windows.MessageBox.Show(
-                $"快捷键 {settings.FileJumpHotkeyDisplayName}（文件对话框跳转）注册失败，可能与其他软件冲突",
-                "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-#endif
-
 #if CLIPX_CLIPBOARD
         Win32.AddClipboardFormatListener(_hwnd);
-#endif
-#if CLIPX_FILEJUMP
-        InstallForegroundWatcher();
-        InstallFileJumpPersistFolderHook();
 #endif
         UpdateEmptyState();
         UpdateBatchHeaderUi();
@@ -379,23 +364,10 @@ public partial class PopupWindow : Window
 
     public void Cleanup()
     {
-#if CLIPX_FILEJUMP
-        UninstallFileJumpPersistFolderHook();
-        DisarmFileJumpClickToNavigate();
-        _fileJumpAutoFirstJumpDoneRoot = IntPtr.Zero;
-        _fileJumpAutoOpenDebounceTimer?.Stop();
-        _fileJumpAutoOpenDebounceTimer = null;
-#endif
         UninstallKeyboardHook();
         UninstallMouseHook();
-#if CLIPX_FILEJUMP
-        UninstallForegroundWatcher();
-#endif
 #if CLIPX_CLIPBOARD
         Win32.UnregisterHotKey(_hwnd, HotkeyId);
-#endif
-#if CLIPX_FILEJUMP
-        Win32.UnregisterHotKey(_hwnd, HotkeyJumpLastFolderId);
 #endif
 #if CLIPX_CLIPBOARD
         Win32.RemoveClipboardFormatListener(_hwnd);
@@ -418,20 +390,6 @@ public partial class PopupWindow : Window
 #else
     public bool UpdateHotkey(uint modifiers, uint key) => true;
 #endif
-
-    public bool UpdateFileJumpHotkey(uint modifiers, uint key)
-    {
-        Win32.UnregisterHotKey(_hwnd, HotkeyJumpLastFolderId);
-        if (!Win32.RegisterHotKey(_hwnd, HotkeyJumpLastFolderId, modifiers | Win32.MOD_NOREPEAT, key))
-        {
-            Win32.RegisterHotKey(_hwnd, HotkeyJumpLastFolderId,
-                _fileJumpHotkeyModifiers | Win32.MOD_NOREPEAT, _fileJumpHotkeyKey);
-            return false;
-        }
-        _fileJumpHotkeyModifiers = modifiers;
-        _fileJumpHotkeyKey = key;
-        return true;
-    }
 
     private void ApplyPopupPanelLayout(AppSettings settings)
     {
@@ -494,18 +452,8 @@ public partial class PopupWindow : Window
         }
 #endif
 
-        if (settings.FileJumpHotkeyModifiers != _fileJumpHotkeyModifiers
-            || settings.FileJumpHotkeyKey != _fileJumpHotkeyKey)
-        {
-            if (!UpdateFileJumpHotkey(settings.FileJumpHotkeyModifiers, settings.FileJumpHotkeyKey))
-            {
-                System.Windows.MessageBox.Show(
-                    $"文件对话框跳转快捷键 {settings.FileJumpHotkeyDisplayName} 注册失败，已恢复原快捷键",
-                    "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-                settings.FileJumpHotkeyModifiers = _fileJumpHotkeyModifiers;
-                settings.FileJumpHotkeyKey = _fileJumpHotkeyKey;
-            }
-        }
+        _fileJumpHotkeyModifiers = settings.FileJumpHotkeyModifiers;
+        _fileJumpHotkeyKey = settings.FileJumpHotkeyKey;
 
         UpdateFooterHints();
 
@@ -956,10 +904,6 @@ public partial class PopupWindow : Window
                         handled = true;
                         break;
 #endif
-                    case HotkeyJumpLastFolderId:
-                        TryJumpFileDialogToLastFolder();
-                        handled = true;
-                        break;
                 }
                 break;
         }

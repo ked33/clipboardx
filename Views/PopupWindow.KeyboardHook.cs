@@ -26,11 +26,6 @@ public partial class PopupWindow : Window
             Dispatcher.BeginInvoke(CycleBatchPasteMode);
             return true;
         }
-        if (HotkeyChordMatches(_fileJumpHotkeyModifiers) && vkCode == _fileJumpHotkeyKey)
-        {
-            Dispatcher.BeginInvoke(TryJumpFileDialogToLastFolder);
-            return true;
-        }
         if (HotkeyChordMatches(_panelPageScrollUpModifiers) && vkCode == _panelPageScrollUpKey)
         {
             Dispatcher.BeginInvoke(() => ScrollPage(-1));

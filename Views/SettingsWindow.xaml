@@ -546,7 +546,7 @@
             <TabItem x:Name="FileJumpTab" Header="文件夹跳转">
                 <TabItem.Resources>
                     <sys:String x:Key="FolderJumpHelp_Hotkey_Title">文件对话框跳转键</sys:String>
-                    <sys:String x:Key="FolderJumpHelp_Hotkey_Body">点击右侧区域后，按下要绑定的组合键。须与「剪贴板」页中的呼出快捷键、批量模式切换键各不相同。</sys:String>
+                    <sys:String x:Key="FolderJumpHelp_Hotkey_Body">点击右侧区域后，按下要绑定的组合键。该按键仅当前台为打开/保存文件对话框时生效，不会注册成系统全局快捷键。</sys:String>
                     <sys:String x:Key="FolderJumpHelp_Delay_Title">跳转列表延时 (ms)</sys:String>
                     <sys:String x:Key="FolderJumpHelp_Delay_Body">0 表示立即弹出；延时内再按一次跳转键会直接跳到预选路径。</sys:String>
                     <sys:String x:Key="FolderJumpHelp_Follow_Title">跳转列表跟随</sys:String>
@@ -675,7 +675,7 @@
                         </StackPanel>
 
                         <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="文件对话框跳转键" Foreground="{DynamicResource PrimaryText}" FontSize="14"
+                            <TextBlock Text="对话框内跳转键" Foreground="{DynamicResource PrimaryText}" FontSize="14"
                                        VerticalAlignment="Center" />
                             <Label Content="?" Style="{StaticResource FolderJumpHelpGlyphLabel}"
                                    ToolTip="{StaticResource FolderJumpTipHotkey}" />
@@ -706,14 +706,14 @@
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
 
-                        <StackPanel Grid.Row="6" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="FileJumpAutoOpenLabel" Grid.Row="6" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource FolderJumpTipOpenListOnDialogOpen}">
                                 <TextBlock Text="对话框打开时自动弹出列表" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                             <Label Content="?" Style="{StaticResource FolderJumpHelpGlyphLabel}"
                                    ToolTip="{StaticResource FolderJumpTipOpenListOnDialogOpen}" />
                         </StackPanel>
-                        <Border Grid.Row="6" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="FileJumpAutoOpenBox" Grid.Row="6" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="FileJumpOpenListOnDialogOpenCycle_Click"
@@ -722,14 +722,14 @@
                                        HorizontalAlignment="Center" />
                         </Border>
 
-                        <StackPanel Grid.Row="8" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="FileJumpAutoNavigateLabel" Grid.Row="8" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource FolderJumpTipAutoNavigateBest}">
                                 <TextBlock Text="自动跳转到最佳路径" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                             <Label Content="?" Style="{StaticResource FolderJumpHelpGlyphLabel}"
                                    ToolTip="{StaticResource FolderJumpTipAutoNavigateBest}" />
                         </StackPanel>
-                        <Border Grid.Row="8" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="FileJumpAutoNavigateBox" Grid.Row="8" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="FileJumpAutoNavigateBestCycle_Click"
@@ -738,14 +738,14 @@
                                        HorizontalAlignment="Center" />
                         </Border>
 
-                        <StackPanel Grid.Row="10" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="FileJumpAutoSyncLabel" Grid.Row="10" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource FolderJumpTipAutoSync}">
                                 <TextBlock Text="切回时自动同步路径" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                             <Label Content="?" Style="{StaticResource FolderJumpHelpGlyphLabel}"
                                    ToolTip="{StaticResource FolderJumpTipAutoSync}" />
                         </StackPanel>
-                        <Border Grid.Row="10" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="FileJumpAutoSyncBox" Grid.Row="10" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="FileJumpAutoSyncCycle_Click"
@@ -786,14 +786,14 @@
                                        HorizontalAlignment="Center" />
                         </Border>
 
-                        <StackPanel Grid.Row="16" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="FileJumpEverythingFolderLabel" Grid.Row="16" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="{StaticResource FolderJumpTipEverythingFolder}">
                                 <TextBlock Text="everything 补充文件夹" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                             <Label Content="?" Style="{StaticResource FolderJumpHelpGlyphLabel}"
                                    ToolTip="{StaticResource FolderJumpTipEverythingFolder}" />
                         </StackPanel>
-                        <Border Grid.Row="16" Grid.Column="1" HorizontalAlignment="Right" Width="140"
+                        <Border x:Name="FileJumpEverythingFolderBox" Grid.Row="16" Grid.Column="1" HorizontalAlignment="Right" Width="140"
                                 Background="{DynamicResource SurfaceBrush}" CornerRadius="4" Padding="10,7"
                                 BorderThickness="1" BorderBrush="{DynamicResource ThemeBorder}"
                                 Cursor="Hand" MouseLeftButtonUp="FileJumpEverythingFolderCycle_Click"
