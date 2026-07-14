@@ -72,6 +72,7 @@ public partial class SettingsWindow : Window
 
 #if !CLIPX_CLIPBOARD
         ClipboardTab.Visibility = Visibility.Collapsed;
+        MainTabs.SelectedItem = FileJumpTab;
 #endif
 #if !CLIPX_FILEJUMP
         FileJumpTab.Visibility = Visibility.Collapsed;

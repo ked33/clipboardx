@@ -183,8 +183,10 @@ public partial class PopupWindow : Window
     /// <summary>Show/UpdateLayout 过程中阻止 WPF 改写位置，避免先出现在 (0,0) 或顶边再跳到目标点。</summary>
     private bool _lockPopupWindowNomove;
     private List<QuickPasteEntry> _quickPastes = new();
+#if CLIPX_CLIPBOARD
     private readonly ClipboardHistoryStore _historyStore = new();
     private ImageOcrQueue? _imageOcrQueue;
+#endif
     private AppSettings? _appSettings;
     private IntPtr _lastForegroundForDialogTrack = IntPtr.Zero;
     private long _lastFileDialogSeenTick;

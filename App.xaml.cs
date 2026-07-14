@@ -18,12 +18,17 @@ public partial class App : Application
     private static Mutex? _mutex;
     private WinForms.NotifyIcon? _trayIcon;
     private long _lastShellForegroundOcclusionBalloonTick;
+#if CLIPX_CLIPBOARD
     private PopupWindow? _popup;
+#endif
 #if CLIPX_CLIPBOARD
     private BatchModeCycleHotkeyHost? _batchModeHotkeyHost;
 #endif
 #if CLIPX_FILEJUMP
     private ExplorerQuickFindController? _explorerQuickFind;
+#if !CLIPX_CLIPBOARD
+    private FileJumpHost? _fileJumpHost;
+#endif
 #endif
     private AppSettings _settings = new();
     private static bool _probingAssemblyResolveRegistered;
@@ -128,17 +133,24 @@ public partial class App : Application
         }
 
         ThemeManager.Apply(_settings.Theme);
+#if CLIPX_CLIPBOARD
         // 启动时如果启用了替换 Win+V，先禁用系统剪贴板历史
         if (_settings.ReplaceSystemWinV)
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(false);
+#endif
         PerUserInstall.EnsureUninstallRegistrationIfNeeded();
         StartupRegistration.Apply(_settings.RunAtStartup, _settings.RunAsAdministrator);
 
+#if CLIPX_CLIPBOARD
         _popup = new PopupWindow();
         _popup.Initialize(_settings);
         _popup.SettingsRequested += OpenSettings;
         _popup.BatchPasteModeChanged += (_, _) =>
             Dispatcher.Invoke(RefreshTrayIcon);
+#elif CLIPX_FILEJUMP
+        _fileJumpHost = new FileJumpHost(Dispatcher);
+        _fileJumpHost.Initialize(_settings);
+#endif
 
 #if CLIPX_CLIPBOARD
         EnsureBatchModeHotkeyHost();
@@ -151,7 +163,9 @@ public partial class App : Application
 #endif
 
         SetupTrayIcon(e.Args);
+#if CLIPX_CLIPBOARD
         _popup.ShellForegroundMayOccludePopup += OnPopupShellForegroundMayOcclude;
+#endif
 #if CLIPX_FILEJUMP
         SyncExplorerQuickFindHook();
 #endif
@@ -350,12 +364,14 @@ public partial class App : Application
         var copy = _settings.ShallowCopy();
         var prevRunAsAdministrator = _settings.RunAsAdministrator;
         var window = new SettingsWindow(copy);
+#if CLIPX_CLIPBOARD
         window.ClearHistoryRequested += () => _popup?.ClearHistory();
         if (_popup != null)
         {
             window.Owner = _popup;
             window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
+#endif
         window.ShowDialog();
 
         if (window.DialogResult == true)
@@ -388,8 +404,10 @@ public partial class App : Application
                 .Select(r => new KeyPassthroughRule { Modifiers = r.Modifiers, Key = r.Key })
                 .ToList();
             _settings.ExclusionApps = copy.ExclusionApps;
+#if CLIPX_CLIPBOARD
             // 启用/禁用系统剪贴板历史（Win+V）
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(!_settings.ReplaceSystemWinV);
+#endif
             _settings.EnableShellNavigateInject = copy.EnableShellNavigateInject;
             _settings.FileJumpAutoOnFirstClick = copy.FileJumpAutoOnFirstClick;
             _settings.PreviewMaxLines = copy.PreviewMaxLines;
@@ -414,7 +432,11 @@ public partial class App : Application
 #endif
             StartupRegistration.Apply(_settings.RunAtStartup, _settings.RunAsAdministrator);
             _settings.Save();
+#if CLIPX_CLIPBOARD
             _popup?.ApplySettings(_settings);
+#elif CLIPX_FILEJUMP
+            _fileJumpHost?.ApplySettings(_settings);
+#endif
 #if CLIPX_CLIPBOARD
             ApplyBatchModeHotkeyAfterSettingsSaved();
 #endif
@@ -738,17 +760,24 @@ public partial class App : Application
     {
         AppSettings.FlushPendingSave();
 
+#if CLIPX_CLIPBOARD
         if (_settings.ClearHistoryOnExit)
             _popup?.ClearHistory();
 
         if (_settings.ReplaceSystemWinV)
             SystemClipboardHelper.SetSystemClipboardHistoryEnabled(true);
+#endif
 
 #if CLIPX_CLIPBOARD
         _batchModeHotkeyHost?.DisposeHost();
         _batchModeHotkeyHost = null;
 #endif
+#if CLIPX_CLIPBOARD
         _popup?.Cleanup();
+#elif CLIPX_FILEJUMP
+        _fileJumpHost?.Dispose();
+        _fileJumpHost = null;
+#endif
 #if CLIPX_FILEJUMP
         _explorerQuickFind?.Dispose();
         _explorerQuickFind = null;

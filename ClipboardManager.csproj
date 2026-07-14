@@ -41,9 +41,11 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- FileJumpOnly 仍引用：避免与 PopupWindow 中 ClipboardHistoryStore 脱节；该构建不加载剪贴板 UI，历史库基本闲置 -->
+  <ItemGroup Condition="'$(ClipboardXProduct)' != 'FileJumpOnly'">
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="NPinyin.Core" Version="3.0.0" />
     <PackageReference Include="Svg" Version="3.4.7" />
   </ItemGroup>
@@ -56,6 +58,17 @@
     <Compile Remove="ClipboardX.Core\**\*" />
     <Compile Remove="ClipboardX.Mac\**\*" />
     <Compile Remove="artifacts\**\*" />
+  </ItemGroup>
+
+  <!-- 文件跳转独立版不编译 SQLite 历史库及依赖该库的 OCR 队列。 -->
+  <ItemGroup Condition="'$(ClipboardXProduct)' == 'FileJumpOnly'">
+    <Compile Remove="Views\PopupWindow.xaml.cs" />
+    <Compile Remove="Views\PopupWindow.KeyboardHook.cs" />
+    <Compile Remove="Views\PopupWindow.MouseHook.cs" />
+    <Compile Remove="Services\ClipboardHistoryStore.cs" />
+    <Compile Remove="Services\ImageOcrQueue.cs" />
+    <Compile Remove="Services\SystemClipboardHelper.cs" />
+    <Page Remove="Views\PopupWindow.xaml" />
   </ItemGroup>
 
   <!-- 原生 Shell 跳转 DLL：须 Link 到输出根目录（与 ShellDialogDeepNavigate 用 BaseDirectory\*.dll 解析一致）；否则默认会落在 native\...\bin\... 子目录下单文件解压后仍找不到 -->
