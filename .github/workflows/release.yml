@@ -4,9 +4,80 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '构建版本号（不含 v 前缀）'
+        required: true
+        default: '1.9.4'
+        type: string
 
 jobs:
+  manual-filejump-no-runtime:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 验证版本号
+        shell: pwsh
+        run: |
+          if ($env:BUILD_VERSION -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Invalid version: $env:BUILD_VERSION"
+          }
+
+      - name: Build ShellNavigate native DLLs
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          & "${{ github.workspace }}/native/ShellNavigate/build.ps1"
+          $d64 = "${{ github.workspace }}/native/ShellNavigate/bin/x64/Release/ClipboardXShellNavigate.dll"
+          $d32 = "${{ github.workspace }}/native/ShellNavigate/bin/Win32/Release/ClipboardXShellNavigate32.dll"
+          if (-not (Test-Path $d64)) { throw "Missing $d64" }
+          if (-not (Test-Path $d32)) { throw "Missing $d32" }
+
+      - name: Publish FileJumpOnly — 不含运行时
+        shell: pwsh
+        run: >
+          dotnet publish ClipboardManager.csproj -c Release -r win-x64
+          -p:ClipboardXProduct=FileJumpOnly
+          -p:SelfContained=false
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:IncludeAllContentForSelfExtract=true
+          -p:DebugType=None
+          "-p:Version=$env:BUILD_VERSION"
+          -o publish/fdd
+
+      - name: 验证并压缩目标产物
+        shell: pwsh
+        run: |
+          $exe = 'publish/fdd/ClipboardX-filejump.exe'
+          if (-not (Test-Path $exe)) { throw "Missing $exe" }
+          $zip = "ClipboardX-filejump-$env:BUILD_VERSION-win-x64-no-runtime.zip"
+          Compress-Archive -Path 'publish/fdd/*' -DestinationPath $zip -Force
+          if (-not (Test-Path $zip)) { throw "Missing $zip" }
+
+      - name: 上传 FileJumpOnly 无运行时 ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipboardX-filejump-${{ inputs.version }}-win-x64-no-runtime
+          path: ClipboardX-filejump-${{ inputs.version }}-win-x64-no-runtime.zip
+          if-no-files-found: error
+
   release:
+    if: github.event_name == 'push'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -126,6 +197,7 @@ jobs:
             ClipboardX-*-setup-self-contained.exe
 
   create-release:
+    if: github.event_name == 'push'
     needs: release
     runs-on: ubuntu-latest
     permissions:
