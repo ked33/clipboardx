@@ -1,0 +1,30 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [Full, ClipboardOnly, FileJumpOnly]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build ${{ matrix.flavor }}
+        shell: pwsh
+        run: >
+          dotnet build ClipboardManager.csproj -c Release
+          -p:ClipboardXProduct=${{ matrix.flavor }}
