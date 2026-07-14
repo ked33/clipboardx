@@ -60,20 +60,18 @@ jobs:
           "-p:Version=$env:BUILD_VERSION"
           -o publish/fdd
 
-      - name: 验证并压缩目标产物
+      - name: 验证目标产物
         shell: pwsh
         run: |
           $exe = 'publish/fdd/ClipboardX-filejump.exe'
           if (-not (Test-Path $exe)) { throw "Missing $exe" }
-          $zip = "ClipboardX-filejump-$env:BUILD_VERSION-win-x64-no-runtime.zip"
-          Compress-Archive -Path 'publish/fdd/*' -DestinationPath $zip -Force
-          if (-not (Test-Path $zip)) { throw "Missing $zip" }
 
-      - name: 上传 FileJumpOnly 无运行时 ZIP
+      # upload-artifact 下载时本身会生成一层 ZIP；直接上传发布目录，避免 ZIP 套 ZIP。
+      - name: 上传 FileJumpOnly 无运行时产物
         uses: actions/upload-artifact@v4
         with:
           name: ClipboardX-filejump-${{ inputs.version }}-win-x64-no-runtime
-          path: ClipboardX-filejump-${{ inputs.version }}-win-x64-no-runtime.zip
+          path: publish/fdd/*
           if-no-files-found: error
 
   release:

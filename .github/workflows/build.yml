@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [Full, ClipboardOnly, FileJumpOnly]
+        flavor: [Full, ClipboardOnly]
 
     steps:
       - name: Checkout
@@ -28,3 +28,61 @@ jobs:
         run: >
           dotnet build ClipboardManager.csproj -c Release
           -p:ClipboardXProduct=${{ matrix.flavor }}
+
+  filejump-package:
+    name: ClipboardX-filejump no-runtime
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Read project version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content -Raw -LiteralPath 'ClipboardManager.csproj'
+          $version = @($project.Project.PropertyGroup.Version) | Where-Object { $_ } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Missing project Version' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build ShellNavigate native DLLs
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          & "${{ github.workspace }}/native/ShellNavigate/build.ps1"
+          $d64 = "${{ github.workspace }}/native/ShellNavigate/bin/x64/Release/ClipboardXShellNavigate.dll"
+          $d32 = "${{ github.workspace }}/native/ShellNavigate/bin/Win32/Release/ClipboardXShellNavigate32.dll"
+          if (-not (Test-Path $d64)) { throw "Missing $d64" }
+          if (-not (Test-Path $d32)) { throw "Missing $d32" }
+
+      - name: Publish ClipboardX-filejump — no runtime
+        shell: pwsh
+        run: >
+          dotnet publish ClipboardManager.csproj -c Release -r win-x64
+          -p:ClipboardXProduct=FileJumpOnly
+          -p:SelfContained=false
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:IncludeAllContentForSelfExtract=true
+          -p:DebugType=None
+          -o publish/filejump
+
+      - name: Verify publish output
+        shell: pwsh
+        run: |
+          $exe = 'publish/filejump/ClipboardX-filejump.exe'
+          if (-not (Test-Path $exe)) { throw "Missing $exe" }
+
+      # upload-artifact 下载时本身会生成一层 ZIP；直接上传发布目录，避免 ZIP 套 ZIP。
+      - name: Upload ClipboardX-filejump no-runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipboardX-filejump-${{ steps.version.outputs.version }}-win-x64-no-runtime
+          path: publish/filejump/*
+          if-no-files-found: error
