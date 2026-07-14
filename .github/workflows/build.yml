@@ -81,7 +81,7 @@ jobs:
 
       # upload-artifact 下载时本身会生成一层 ZIP；直接上传发布目录，避免 ZIP 套 ZIP。
       - name: Upload ClipboardX-filejump no-runtime
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ClipboardX-filejump-${{ steps.version.outputs.version }}-win-x64-no-runtime
           path: publish/filejump/*
