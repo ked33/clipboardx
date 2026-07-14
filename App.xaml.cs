@@ -376,6 +376,8 @@ public partial class App : Application
             _settings.HotkeyKey = copy.HotkeyKey;
             _settings.FileJumpHotkeyModifiers = copy.FileJumpHotkeyModifiers;
             _settings.FileJumpHotkeyKey = copy.FileJumpHotkeyKey;
+            _settings.FileJumpListHotkeyModifiers = copy.FileJumpListHotkeyModifiers;
+            _settings.FileJumpListHotkeyKey = copy.FileJumpListHotkeyKey;
             _settings.FileJumpPickerShowDelayMs = copy.FileJumpPickerShowDelayMs;
             _settings.FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(copy.FileJumpPickerFollowMode);
             _settings.FileJumpPickerAutoPopup = copy.FileJumpPickerAutoPopup;

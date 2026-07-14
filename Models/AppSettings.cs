@@ -15,9 +15,13 @@ public class AppSettings
     public uint HotkeyModifiers { get; set; } = Win32.MOD_CONTROL;
     public uint HotkeyKey { get; set; } = Win32.VK_OEM_3;
 
-    /// <summary>「打开/保存」对话框中跳转到文件夹的全局快捷键（默认 Ctrl+G）。</summary>
+    /// <summary>「打开/保存」对话框中直接跳到最近激活路径的快捷键（默认 Ctrl+G）。</summary>
     public uint FileJumpHotkeyModifiers { get; set; } = Win32.MOD_CONTROL;
     public uint FileJumpHotkeyKey { get; set; } = Win32.VK_G;
+
+    /// <summary>「打开/保存」对话框中弹出跳转列表的快捷键（默认 Ctrl+Alt+G）。</summary>
+    public uint FileJumpListHotkeyModifiers { get; set; } = Win32.MOD_CONTROL | Win32.MOD_ALT;
+    public uint FileJumpListHotkeyKey { get; set; } = Win32.VK_G;
 
     /// <summary>多候选时跳转列表弹出前的延时（毫秒）；0 表示立即弹出。自动弹出时仍会合并极短防抖（约一帧），见 PopupWindow。</summary>
     public int FileJumpPickerShowDelayMs { get; set; } = 0;
@@ -345,6 +349,8 @@ public class AppSettings
     public string HotkeyDisplayName => FormatHotkey(HotkeyModifiers, HotkeyKey);
 
     public string FileJumpHotkeyDisplayName => FormatHotkey(FileJumpHotkeyModifiers, FileJumpHotkeyKey);
+
+    public string FileJumpListHotkeyDisplayName => FormatHotkey(FileJumpListHotkeyModifiers, FileJumpListHotkeyKey);
 
     public string BatchModeCycleHotkeyDisplayName => FormatHotkey(BatchModeCycleHotkeyModifiers, BatchModeCycleHotkeyKey);
 
@@ -676,6 +682,8 @@ public class AppSettings
         HotkeyKey = HotkeyKey,
         FileJumpHotkeyModifiers = FileJumpHotkeyModifiers,
         FileJumpHotkeyKey = FileJumpHotkeyKey,
+        FileJumpListHotkeyModifiers = FileJumpListHotkeyModifiers,
+        FileJumpListHotkeyKey = FileJumpListHotkeyKey,
         FileJumpPickerShowDelayMs = FileJumpPickerShowDelayMs,
         FileJumpPickerFollowMode = FileJumpPickerFollowModes.Normalize(FileJumpPickerFollowMode),
         FileJumpPickerAutoPopup = FileJumpPickerAutoPopup,

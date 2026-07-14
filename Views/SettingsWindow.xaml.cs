@@ -16,6 +16,9 @@ public partial class SettingsWindow : Window
     private uint _pendingFileJumpModifiers;
     private uint _pendingFileJumpKey;
     private bool _isRecordingFileJumpHotkey;
+    private uint _pendingFileJumpListModifiers;
+    private uint _pendingFileJumpListKey;
+    private bool _isRecordingFileJumpListHotkey;
     private uint _pendingBatchModeCycleModifiers;
     private uint _pendingBatchModeCycleKey;
     private bool _isRecordingBatchModeCycleHotkey;
@@ -70,8 +73,6 @@ public partial class SettingsWindow : Window
         _settings = settings;
         _originalTheme = settings.Theme;
 
-        FileJumpAutoOpenLabel.Visibility = Visibility.Collapsed;
-        FileJumpAutoOpenBox.Visibility = Visibility.Collapsed;
         FileJumpAutoNavigateLabel.Visibility = Visibility.Collapsed;
         FileJumpAutoNavigateBox.Visibility = Visibility.Collapsed;
         FileJumpAutoSyncLabel.Visibility = Visibility.Collapsed;
@@ -102,6 +103,9 @@ public partial class SettingsWindow : Window
         _pendingFileJumpModifiers = settings.FileJumpHotkeyModifiers;
         _pendingFileJumpKey = settings.FileJumpHotkeyKey;
         FileJumpHotkeyText.Text = settings.FileJumpHotkeyDisplayName;
+        _pendingFileJumpListModifiers = settings.FileJumpListHotkeyModifiers;
+        _pendingFileJumpListKey = settings.FileJumpListHotkeyKey;
+        FileJumpListHotkeyText.Text = settings.FileJumpListHotkeyDisplayName;
 
         _pendingBatchModeCycleModifiers = settings.BatchModeCycleHotkeyModifiers;
         _pendingBatchModeCycleKey = settings.BatchModeCycleHotkeyKey;
@@ -137,11 +141,9 @@ public partial class SettingsWindow : Window
         FileJumpFollowText.Text = FileJumpPickerFollowModes.IsDialog(_pendingFileJumpFollowMode) ? "跟随对话框" : "跟随鼠标";
 
         _pendingFileJumpOpenListOnDialogOpen = settings.FileJumpPickerOpenWhenDialogForeground;
-        FileJumpOpenListOnDialogOpenText.Text = _pendingFileJumpOpenListOnDialogOpen ? "开启" : "关闭";
 
         _pendingFileJumpAutoNavigateBest = settings.FileJumpAutoOnFirstClick;
         FileJumpAutoNavigateBestText.Text = _pendingFileJumpAutoNavigateBest ? "开启" : "关闭";
-        UpdateFileJumpFollowVisibility();
 
         _pendingFileJumpAutoSyncOnReturn = settings.FileJumpAutoSyncOnReturn;
         FileJumpAutoSyncText.Text = _pendingFileJumpAutoSyncOnReturn ? "开启" : "关闭";
@@ -596,6 +598,44 @@ public partial class SettingsWindow : Window
         }
     }
 
+    private void FileJumpListHotkeyBox_Click(object sender, RoutedEventArgs e)
+    {
+        _isRecordingFileJumpListHotkey = true;
+        FileJumpListHotkeyText.Text = "按下快捷键…";
+        FileJumpListHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("AccentBg");
+        FileJumpListHotkeyBox.Focus();
+    }
+
+    private void FileJumpListHotkeyBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_isRecordingFileJumpListHotkey) return;
+        e.Handled = true;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin)
+            return;
+
+        var modifiers = GetHotkeyModifiersForRecording();
+        if (modifiers == 0) return;
+
+        _pendingFileJumpListModifiers = modifiers;
+        _pendingFileJumpListKey = (uint)KeyInterop.VirtualKeyFromKey(key);
+        _isRecordingFileJumpListHotkey = false;
+        FileJumpListHotkeyText.Text = AppSettings.FormatHotkey(
+            _pendingFileJumpListModifiers, _pendingFileJumpListKey);
+        FileJumpListHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+    }
+
+    private void FileJumpListHotkeyBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!_isRecordingFileJumpListHotkey) return;
+        _isRecordingFileJumpListHotkey = false;
+        FileJumpListHotkeyText.Text = AppSettings.FormatHotkey(
+            _pendingFileJumpListModifiers, _pendingFileJumpListKey);
+        FileJumpListHotkeyText.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryText");
+    }
+
     private void BatchModeCycleHotkeyBox_Click(object sender, RoutedEventArgs e)
     {
         _isRecordingBatchModeCycleHotkey = true;
@@ -957,24 +997,10 @@ public partial class SettingsWindow : Window
         FileJumpFollowText.Text = FileJumpPickerFollowModes.IsDialog(_pendingFileJumpFollowMode) ? "跟随对话框" : "跟随鼠标";
     }
 
-    private void FileJumpOpenListOnDialogOpenCycle_Click(object sender, RoutedEventArgs e)
-    {
-        _pendingFileJumpOpenListOnDialogOpen = !_pendingFileJumpOpenListOnDialogOpen;
-        FileJumpOpenListOnDialogOpenText.Text = _pendingFileJumpOpenListOnDialogOpen ? "开启" : "关闭";
-        UpdateFileJumpFollowVisibility();
-    }
-
     private void FileJumpAutoNavigateBestCycle_Click(object sender, RoutedEventArgs e)
     {
         _pendingFileJumpAutoNavigateBest = !_pendingFileJumpAutoNavigateBest;
         FileJumpAutoNavigateBestText.Text = _pendingFileJumpAutoNavigateBest ? "开启" : "关闭";
-    }
-
-    private void UpdateFileJumpFollowVisibility()
-    {
-        var vis = _pendingFileJumpOpenListOnDialogOpen ? Visibility.Collapsed : Visibility.Visible;
-        FileJumpFollowLabel.Visibility = vis;
-        FileJumpFollowBox.Visibility = vis;
     }
 
     private void FileJumpAutoSyncCycle_Click(object sender, RoutedEventArgs e)
@@ -1138,6 +1164,14 @@ public partial class SettingsWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        if (_pendingFileJumpModifiers == _pendingFileJumpListModifiers
+            && _pendingFileJumpKey == _pendingFileJumpListKey)
+        {
+            System.Windows.MessageBox.Show("对话框内跳转键与跳转列表键不能相同。", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 #endif
 
 #if CLIPX_FILEJUMP && CLIPX_CLIPBOARD
@@ -1168,6 +1202,8 @@ public partial class SettingsWindow : Window
         _settings.HotkeyKey = _pendingKey;
         _settings.FileJumpHotkeyModifiers = _pendingFileJumpModifiers;
         _settings.FileJumpHotkeyKey = _pendingFileJumpKey;
+        _settings.FileJumpListHotkeyModifiers = _pendingFileJumpListModifiers;
+        _settings.FileJumpListHotkeyKey = _pendingFileJumpListKey;
         _settings.BatchModeCycleHotkeyModifiers = _pendingBatchModeCycleModifiers;
         _settings.BatchModeCycleHotkeyKey = _pendingBatchModeCycleKey;
         _settings.FileJumpPickerShowDelayMs = jumpDelayMs;

@@ -17,6 +17,8 @@ internal sealed class FileJumpHost : IDisposable
     private AppSettings? _settings;
     private uint _hotkeyModifiers;
     private uint _hotkeyKey;
+    private uint _listHotkeyModifiers;
+    private uint _listHotkeyKey;
     private IntPtr _keyboardHook;
     private int _collectGeneration;
     private long _lastHotkeyTick;
@@ -35,6 +37,8 @@ internal sealed class FileJumpHost : IDisposable
         _settings = settings;
         _hotkeyModifiers = settings.FileJumpHotkeyModifiers;
         _hotkeyKey = settings.FileJumpHotkeyKey;
+        _listHotkeyModifiers = settings.FileJumpListHotkeyModifiers;
+        _listHotkeyKey = settings.FileJumpListHotkeyKey;
     }
 
     private void InstallKeyboardHook()
@@ -61,7 +65,9 @@ internal sealed class FileJumpHost : IDisposable
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         var keyboard = Marshal.PtrToStructure<Win32.KBDLLHOOKSTRUCT>(lParam);
-        if (keyboard.vkCode != _hotkeyKey || !ModifiersMatch(_hotkeyModifiers))
+        var directJump = keyboard.vkCode == _hotkeyKey && ModifiersMatch(_hotkeyModifiers);
+        var openList = keyboard.vkCode == _listHotkeyKey && ModifiersMatch(_listHotkeyModifiers);
+        if (!directJump && !openList)
             return Win32.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
 
         var foreground = Win32.GetForegroundWindow();
@@ -75,7 +81,7 @@ internal sealed class FileJumpHost : IDisposable
             return (IntPtr)1;
         _lastHotkeyTick = now;
 
-        _dispatcher.BeginInvoke(() => OpenPickerForDialog(dialog), DispatcherPriority.Send);
+        _dispatcher.BeginInvoke(() => ExecuteForDialog(dialog, openList), DispatcherPriority.Send);
         return (IntPtr)1;
     }
 
@@ -112,12 +118,12 @@ internal sealed class FileJumpHost : IDisposable
         }
     }
 
-    private void OpenPickerForDialog(IntPtr dialog)
+    private void ExecuteForDialog(IntPtr dialog, bool openList)
     {
         var settings = _settings;
         if (settings == null || dialog == IntPtr.Zero || !Win32.IsWindow(dialog)) return;
 
-        if (_activePicker != null)
+        if (openList && _activePicker != null)
         {
             try { _activePicker.Activate(); } catch { }
             return;
@@ -144,7 +150,23 @@ internal sealed class FileJumpHost : IDisposable
             _dispatcher.BeginInvoke(() =>
             {
                 if (generation != Volatile.Read(ref _collectGeneration)) return;
-                ShowPicker(candidates, dialog, settings);
+                if (openList)
+                {
+                    ShowPicker(candidates, dialog, settings);
+                    return;
+                }
+
+                if (candidates.Count == 0) return;
+                var path = candidates[0].Path;
+                var allowInject = settings.EnableShellNavigateInject;
+                var navigateThread = new Thread(() =>
+                    FileDialogJumpHelper.TryNavigateToFolder(dialog, path, allowInject))
+                {
+                    IsBackground = true,
+                    Name = "ClipboardX-FileJumpHost-DirectNavigate",
+                };
+                navigateThread.SetApartmentState(ApartmentState.STA);
+                navigateThread.Start();
             }, DispatcherPriority.Normal);
         }
 
