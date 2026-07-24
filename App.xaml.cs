@@ -408,9 +408,10 @@ public partial class App : Application
             _settings.EnableShellNavigateInject = copy.EnableShellNavigateInject;
             _settings.FileJumpAutoOnFirstClick = copy.FileJumpAutoOnFirstClick;
             _settings.FileJumpPickerEverythingFolderSearch = copy.FileJumpPickerEverythingFolderSearch;
-            // 设置窗改的是 ShallowCopy；这两项此前漏合并，导致「常用路径最大数量/阈值」保存不生效
+            // 设置窗改的是 ShallowCopy；须合并回主设置，否则保存不生效
             _settings.RecentFolderMaxCount = Math.Clamp(copy.RecentFolderMaxCount, 1, 10);
             _settings.RecentFolderAutoAddMinCount = Math.Clamp(copy.RecentFolderAutoAddMinCount, 1, 100);
+            _settings.FileJumpListMaxItems = Math.Clamp(copy.FileJumpListMaxItems, 5, 100);
             _settings.TrimRecentFileDialogFoldersToMax();
 #if CLIPX_FILEJUMP && CLIPX_CLIPBOARD
             _settings.ExplorerEverythingQuickFindEnabled = copy.ExplorerEverythingQuickFindEnabled;

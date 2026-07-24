@@ -800,6 +800,11 @@ public partial class FileDialogJumpPickerWindow : Window
         return false;
     }
 
+    private static bool IsRecentJumpLabel(string? label)
+        => !string.IsNullOrEmpty(label)
+           && (label.StartsWith("常用路径", StringComparison.Ordinal)
+               || string.Equals(label, "常用", StringComparison.Ordinal));
+
     private void BuildMasterList()
     {
         var sw = Stopwatch.StartNew();
@@ -833,9 +838,7 @@ public partial class FileDialogJumpPickerWindow : Window
             }
             catch { continue; }
 
-            var isRecentLabel = c.Label.StartsWith("常用路径", StringComparison.Ordinal)
-                                || string.Equals(c.Label, "常用", StringComparison.Ordinal);
-            if (isRecentLabel)
+            if (IsRecentJumpLabel(c.Label))
             {
                 if (recentShown >= recentCap) continue;
                 recentShown++;
@@ -869,13 +872,30 @@ public partial class FileDialogJumpPickerWindow : Window
             if (!string.IsNullOrEmpty(query))
                 seq = seq.Where(r => r.MatchesSearch(query));
 
-            var sorted = seq
-                .OrderByDescending(r => r.IsFavorite && !string.IsNullOrEmpty(query))
-                .ThenByDescending(r => r.IsFavorite)
-                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var r in sorted)
-                _displayRows.Add(r);
+            // 无检索：按「收藏 → 非常用采集 → 常用路径」优先级截断到目录总数上限
+            // 有检索：不截断，便于搜到被挤出首屏的项
+            IEnumerable<FileJumpPickerRow> ordered;
+            if (string.IsNullOrEmpty(query))
+            {
+                ordered = seq
+                    .OrderBy(r => r.IsFavorite ? 0 : IsRecentJumpLabel(r.SourceLabel) ? 2 : 1)
+                    .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
+                var maxTotal = _settings.EffectiveFileJumpListMaxItems;
+                foreach (var r in ordered)
+                {
+                    _displayRows.Add(r);
+                    if (_displayRows.Count >= maxTotal)
+                        break;
+                }
+            }
+            else
+            {
+                ordered = seq
+                    .OrderByDescending(r => r.IsFavorite)
+                    .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
+                foreach (var r in ordered)
+                    _displayRows.Add(r);
+            }
 
         }
 

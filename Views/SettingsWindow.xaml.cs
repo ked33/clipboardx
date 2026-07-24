@@ -151,6 +151,7 @@ public partial class SettingsWindow : Window
         _pendingFileJumpPickerEverythingFolderSearch = settings.FileJumpPickerEverythingFolderSearch;
         FileJumpEverythingFolderText.Text = _pendingFileJumpPickerEverythingFolderSearch ? "开启" : "关闭";
 
+        FileJumpListMaxItemsBox.Text = settings.FileJumpListMaxItems.ToString();
         RecentFolderMaxCountBox.Text = settings.RecentFolderMaxCount.ToString();
         RecentFolderAutoAddMinCountBox.Text = settings.RecentFolderAutoAddMinCount.ToString();
 
@@ -1183,6 +1184,13 @@ public partial class SettingsWindow : Window
         }
 #endif
 
+        if (!int.TryParse(FileJumpListMaxItemsBox.Text, out var jumpListMaxItems) || jumpListMaxItems < 5 || jumpListMaxItems > 100)
+        {
+            System.Windows.MessageBox.Show("跳转列表目录总数应在 5 ~ 100 之间", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         if (!int.TryParse(RecentFolderMaxCountBox.Text, out var recentMaxCount) || recentMaxCount < 1 || recentMaxCount > 10)
         {
             System.Windows.MessageBox.Show("常用路径最大数量应在 1 ~ 10 之间", "提示",
@@ -1232,6 +1240,7 @@ public partial class SettingsWindow : Window
         _settings.FileJumpAutoOnFirstClick = _pendingFileJumpAutoNavigateBest;
         _settings.FileJumpAutoSyncOnReturn = _pendingFileJumpAutoSyncOnReturn;
         _settings.FileJumpPickerEverythingFolderSearch = _pendingFileJumpPickerEverythingFolderSearch;
+        _settings.FileJumpListMaxItems = jumpListMaxItems;
         _settings.RecentFolderMaxCount = recentMaxCount;
         _settings.RecentFolderAutoAddMinCount = recentAutoAddMin;
 #if CLIPX_FILEJUMP && CLIPX_CLIPBOARD

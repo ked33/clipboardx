@@ -3711,6 +3711,11 @@ public partial class PopupWindow : Window
             }
         }
 
+        // 全局收藏/常用选择窗同样遵守跳转列表目录总数（收藏优先）
+        var maxTotal = _appSettings.EffectiveFileJumpListMaxItems;
+        if (candidates.Count > maxTotal)
+            candidates = candidates.Take(maxTotal).ToList();
+
         Win32.GetCursorPos(out var pos);
         var picker = new FileDialogJumpPickerWindow(
             candidates, 0, pos.X, pos.Y, _appSettings, IntPtr.Zero,

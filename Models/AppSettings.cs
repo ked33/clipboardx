@@ -173,6 +173,12 @@ public class AppSettings
     /// <summary>自动加入常用路径的最小确认次数阈值（默认 1）。</summary>
     public int RecentFolderAutoAddMinCount { get; set; } = 1;
 
+    /// <summary>
+    /// 跳转列表无检索时最多显示的目录总数（默认 20，范围 5～100）。
+    /// 含收藏、资源管理器等实时路径与常用路径；检索时不截断，以便搜到被挤出首屏的项。
+    /// </summary>
+    public int FileJumpListMaxItems { get; set; } = 20;
+
     /// <summary>生效的常用路径上限（非法值回退到默认 5，并夹到 1～10）。</summary>
     public int EffectiveRecentFolderMaxCount
     {
@@ -181,6 +187,17 @@ public class AppSettings
             var n = RecentFolderMaxCount;
             if (n < 1) n = 5;
             return n > 10 ? 10 : n;
+        }
+    }
+
+    /// <summary>生效的跳转列表目录总数上限（非法值回退 20，夹到 5～100）。</summary>
+    public int EffectiveFileJumpListMaxItems
+    {
+        get
+        {
+            var n = FileJumpListMaxItems;
+            if (n < 5) n = 20;
+            return n > 100 ? 100 : n;
         }
     }
 
@@ -525,6 +542,8 @@ public class AppSettings
                         settings.RecentFolderMaxCount = 5;
                     if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
                         settings.RecentFolderAutoAddMinCount = 1;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpListMaxItems), out _))
+                        settings.FileJumpListMaxItems = 20;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     if (settings.FolderConfirmCounts == null)
@@ -587,6 +606,8 @@ public class AppSettings
                         settings.RecentFolderMaxCount = 5;
                     if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
                         settings.RecentFolderAutoAddMinCount = 1;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpListMaxItems), out _))
+                        settings.FileJumpListMaxItems = 20;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     if (settings.FolderConfirmCounts == null)
@@ -772,6 +793,7 @@ public class AppSettings
         RecentFileDialogFolders = RecentFileDialogFolders.ToList(),
         RecentFolderMaxCount = RecentFolderMaxCount,
         RecentFolderAutoAddMinCount = RecentFolderAutoAddMinCount,
+        FileJumpListMaxItems = FileJumpListMaxItems,
         FolderConfirmCounts = FolderConfirmCounts != null
             ? new Dictionary<string, int>(FolderConfirmCounts, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
