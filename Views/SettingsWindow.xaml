@@ -806,14 +806,14 @@
                         </Border>
 
                         <StackPanel Grid.Row="18" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Background="Transparent" Padding="0,4" ToolTip="常用路径列表最多显示的条目数（1～10）；新确认的路径会插入列表头部，超出时丢弃最旧条目。">
+                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。不含收藏与资源管理器实时路径。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。">
                                 <TextBlock Text="常用路径最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                         </StackPanel>
                         <TextBox x:Name="RecentFolderMaxCountBox" Grid.Row="18" Grid.Column="1"
                                  HorizontalAlignment="Right" Width="140"
                                  FontSize="14" Padding="8,6"
-                                 ToolTip="常用路径列表最多显示的条目数（1～10）；新确认的路径会插入列表头部，超出时丢弃最旧条目。"
+                                 ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。不含收藏与资源管理器实时路径。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。"
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
 

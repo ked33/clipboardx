@@ -821,6 +821,9 @@ public partial class FileDialogJumpPickerWindow : Window
             catch { /* ignore */ }
         }
 
+        // 采集结果里的「常用路径*」再按当前设置上限截断，避免列表与配置脱节
+        var recentCap = _settings.EffectiveRecentFolderMaxCount;
+        var recentShown = 0;
         foreach (var c in _collectorSnapshot)
         {
             if (seen.Contains(c.Path)) continue;
@@ -829,6 +832,14 @@ public partial class FileDialogJumpPickerWindow : Window
                 if (!Directory.Exists(c.Path)) continue;
             }
             catch { continue; }
+
+            var isRecentLabel = c.Label.StartsWith("常用路径", StringComparison.Ordinal)
+                                || string.Equals(c.Label, "常用", StringComparison.Ordinal);
+            if (isRecentLabel)
+            {
+                if (recentShown >= recentCap) continue;
+                recentShown++;
+            }
 
             seen.Add(c.Path);
             _masterRows.Add(new FileJumpPickerRow(c.Label, c.Path, false));
@@ -1948,7 +1959,7 @@ public partial class FileDialogJumpPickerWindow : Window
                 try
                 {
                     fresh = FileManagerPathCollector.CollectCandidates(dlgHwnd, memForCollect,
-                        recentFolders: _settings.RecentFileDialogFolders);
+                        recentFolders: _settings.GetRecentFoldersForJump());
                 }
                 catch
                 {

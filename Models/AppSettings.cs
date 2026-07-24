@@ -167,11 +167,43 @@ public class AppSettings
     /// <summary>最近通过「确定/打开/保存」等确认操作记录的路径，最多 <see cref="RecentFolderMaxCount"/> 条（新的在前）。</summary>
     public List<string> RecentFileDialogFolders { get; set; } = new();
 
-    /// <summary>常用路径最大显示数量（默认 5）。</summary>
+    /// <summary>常用路径最大显示/保存数量（默认 5，范围 1～10）。仅限制「常用路径」条目，不含收藏与资源管理器实时路径。</summary>
     public int RecentFolderMaxCount { get; set; } = 5;
 
     /// <summary>自动加入常用路径的最小确认次数阈值（默认 1）。</summary>
     public int RecentFolderAutoAddMinCount { get; set; } = 1;
+
+    /// <summary>生效的常用路径上限（非法值回退到默认 5，并夹到 1～10）。</summary>
+    public int EffectiveRecentFolderMaxCount
+    {
+        get
+        {
+            var n = RecentFolderMaxCount;
+            if (n < 1) n = 5;
+            return n > 10 ? 10 : n;
+        }
+    }
+
+    /// <summary>
+    /// 跳转列表用的常用路径快照（已按 <see cref="EffectiveRecentFolderMaxCount"/> 截断，新的在前）。
+    /// 无有效项时返回 null。
+    /// </summary>
+    public List<string>? GetRecentFoldersForJump()
+    {
+        RecentFileDialogFolders ??= new List<string>();
+        if (RecentFileDialogFolders.Count == 0) return null;
+
+        var max = EffectiveRecentFolderMaxCount;
+        var list = new List<string>(Math.Min(max, RecentFileDialogFolders.Count));
+        foreach (var p in RecentFileDialogFolders)
+        {
+            if (string.IsNullOrWhiteSpace(p)) continue;
+            list.Add(p.Trim());
+            if (list.Count >= max) break;
+        }
+
+        return list.Count > 0 ? list : null;
+    }
 
     /// <summary>排除应用列表：前台属于这些进程时不触发 ClipboardX 全局快捷键（进程名不含 .exe 后缀，不区分大小写）。</summary>
     public List<string> ExclusionApps { get; set; } = new();
@@ -279,12 +311,12 @@ public class AppSettings
     }
 
     /// <summary>
-    /// 按 <see cref="RecentFolderMaxCount"/> 裁剪常用路径列表（调小上限后立即生效）。
+    /// 按 <see cref="EffectiveRecentFolderMaxCount"/> 裁剪常用路径列表（调小上限后立即生效）。
     /// </summary>
     public void TrimRecentFileDialogFoldersToMax()
     {
         RecentFileDialogFolders ??= new List<string>();
-        var max = RecentFolderMaxCount < 1 ? 5 : RecentFolderMaxCount;
+        var max = EffectiveRecentFolderMaxCount;
         while (RecentFileDialogFolders.Count > max)
             RecentFileDialogFolders.RemoveAt(RecentFileDialogFolders.Count - 1);
         LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
@@ -599,8 +631,8 @@ public class AppSettings
             catch { /* ignore */ }
         }
 
-        if (settings.RecentFileDialogFolders.Count > 0)
-            settings.LastFileDialogFolder = settings.RecentFileDialogFolders[0].Trim();
+        // 启动时即按当前上限裁剪，避免历史列表超过设置仍全部显示
+        settings.TrimRecentFileDialogFoldersToMax();
     }
 
     private static readonly object s_saveLock = new();

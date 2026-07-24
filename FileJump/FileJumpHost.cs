@@ -246,7 +246,7 @@ internal sealed class FileJumpHost : IDisposable
         }
 
         var generation = Interlocked.Increment(ref _collectGeneration);
-        var recentFolders = settings.RecentFileDialogFolders.ToList();
+        var recentFolders = settings.GetRecentFoldersForJump();
 
         void Collect()
         {

@@ -128,7 +128,7 @@ internal static class FileManagerPathCollector
     /// <param name="skipAlternateUiAutomation">为 true 时跳过白名单第三方管理器的 UIA 树扫描（可快一个数量级），用于先弹出跳转列表再异步补全。</param>
     /// <param name="stopAfterCandidateCount">大于 0 时，在「去重后的候选条数」达到该值后不再遍历剩余顶层窗口（用于快速先开列表，完整列表由后续全量采集补全）。</param>
     /// <param name="shouldAbort">若返回 true 则立即停止顶层窗口遍历（用于采集世代过期时中止长循环）。</param>
-    /// <param name="recentFolders">最近确认的目录（最多 3 条）；优先于单独的 <paramref name="memoryFolder"/>。</param>
+    /// <param name="recentFolders">最近确认的常用目录（条数由设置「常用路径最大数量」决定）；优先于单独的 <paramref name="memoryFolder"/>。</param>
     public static List<FileJumpCandidate> CollectCandidates(IntPtr dialogHwnd, string? memoryFolder, int zDelta = 2,
         bool skipAlternateUiAutomation = false, int stopAfterCandidateCount = 0, Func<bool>? shouldAbort = null,
         IReadOnlyList<string>? recentFolders = null)

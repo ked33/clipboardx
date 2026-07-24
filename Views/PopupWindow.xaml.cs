@@ -3539,21 +3539,7 @@ public partial class PopupWindow : Window
     }
 
     private static List<string>? CopyRecentForJump(AppSettings? settings)
-    {
-        if (settings?.RecentFileDialogFolders == null || settings.RecentFileDialogFolders.Count == 0)
-            return null;
-        var maxCount = settings.RecentFolderMaxCount;
-        if (maxCount < 1) maxCount = 5;
-        var list = new List<string>();
-        foreach (var p in settings.RecentFileDialogFolders)
-        {
-            if (string.IsNullOrWhiteSpace(p)) continue;
-            list.Add(p.Trim());
-            if (list.Count >= maxCount) break;
-        }
-
-        return list.Count > 0 ? list : null;
-    }
+        => settings?.GetRecentFoldersForJump();
 
     /// <summary>
     /// 记录最近一次活跃外部文件管理器的路径；切回文件对话框时优先将其作为同步目标。
@@ -3708,17 +3694,21 @@ public partial class PopupWindow : Window
             catch { /* ignore */ }
         }
 
-        foreach (var r in _appSettings.RecentFileDialogFolders)
+        var recentForJump = _appSettings.GetRecentFoldersForJump();
+        if (recentForJump != null)
         {
-            if (string.IsNullOrWhiteSpace(r)) continue;
-            try
+            foreach (var r in recentForJump)
             {
-                var full = Path.GetFullPath(r.Trim());
-                if (Directory.Exists(full) && !candidates.Any(c =>
-                    string.Equals(c.Path, full, StringComparison.OrdinalIgnoreCase)))
-                    candidates.Add(new FileJumpCandidate("常用", full));
+                if (string.IsNullOrWhiteSpace(r)) continue;
+                try
+                {
+                    var full = Path.GetFullPath(r.Trim());
+                    if (Directory.Exists(full) && !candidates.Any(c =>
+                        string.Equals(c.Path, full, StringComparison.OrdinalIgnoreCase)))
+                        candidates.Add(new FileJumpCandidate("常用", full));
+                }
+                catch { /* ignore */ }
             }
-            catch { /* ignore */ }
         }
 
         Win32.GetCursorPos(out var pos);

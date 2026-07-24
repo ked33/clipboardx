@@ -433,7 +433,8 @@ public partial class App : Application
             _settings.BatchQueueAutoSwitchToNormalAfterQueueDone = copy.BatchQueueAutoSwitchToNormalAfterQueueDone;
             _settings.PasteSimulationMode = PasteSimulationModes.Normalize(copy.PasteSimulationMode);
             StartupRegistration.Apply(_settings.RunAtStartup, _settings.RunAsAdministrator);
-            _settings.Save();
+            // 同步落盘，避免异步 Save 被后续写覆盖时丢掉刚改的上限
+            _settings.SaveSync();
 #if CLIPX_CLIPBOARD
             _popup?.ApplySettings(_settings);
 #endif
