@@ -167,17 +167,42 @@ public class AppSettings
     /// <summary>最近通过「确定/打开/保存」等确认操作记录的路径，最多 <see cref="RecentFolderMaxCount"/> 条（新的在前）。</summary>
     public List<string> RecentFileDialogFolders { get; set; } = new();
 
-    /// <summary>常用路径最大显示/保存数量（默认 5，范围 1～10）。仅限制「常用路径」条目，不含收藏与资源管理器实时路径。</summary>
+    /// <summary>跳转列表中「收藏」最多显示条数（默认 20，范围 0～50）。0 表示不显示收藏；不删除已保存的收藏项。</summary>
+    public int FileJumpFavoritesMaxCount { get; set; } = 20;
+
+    /// <summary>
+    /// 跳转列表中资源管理器 / Z 序等「实时路径」最多显示条数（默认 15，范围 0～50）。
+    /// 0 表示不显示实时路径。
+    /// </summary>
+    public int FileJumpLivePathsMaxCount { get; set; } = 15;
+
+    /// <summary>常用路径最大显示/保存数量（默认 5，范围 1～10）。仅限制「常用路径」条目。</summary>
     public int RecentFolderMaxCount { get; set; } = 5;
 
     /// <summary>自动加入常用路径的最小确认次数阈值（默认 1）。</summary>
     public int RecentFolderAutoAddMinCount { get; set; } = 1;
 
-    /// <summary>
-    /// 跳转列表无检索时最多显示的目录总数（默认 20，范围 5～100）。
-    /// 含收藏、资源管理器等实时路径与常用路径；检索时不截断，以便搜到被挤出首屏的项。
-    /// </summary>
-    public int FileJumpListMaxItems { get; set; } = 20;
+    /// <summary>生效的收藏显示上限（非法值回退 20，夹到 0～50）。</summary>
+    public int EffectiveFileJumpFavoritesMaxCount
+    {
+        get
+        {
+            var n = FileJumpFavoritesMaxCount;
+            if (n < 0) n = 20;
+            return n > 50 ? 50 : n;
+        }
+    }
+
+    /// <summary>生效的实时路径显示上限（非法值回退 15，夹到 0～50）。</summary>
+    public int EffectiveFileJumpLivePathsMaxCount
+    {
+        get
+        {
+            var n = FileJumpLivePathsMaxCount;
+            if (n < 0) n = 15;
+            return n > 50 ? 50 : n;
+        }
+    }
 
     /// <summary>生效的常用路径上限（非法值回退到默认 5，并夹到 1～10）。</summary>
     public int EffectiveRecentFolderMaxCount
@@ -187,17 +212,6 @@ public class AppSettings
             var n = RecentFolderMaxCount;
             if (n < 1) n = 5;
             return n > 10 ? 10 : n;
-        }
-    }
-
-    /// <summary>生效的跳转列表目录总数上限（非法值回退 20，夹到 5～100）。</summary>
-    public int EffectiveFileJumpListMaxItems
-    {
-        get
-        {
-            var n = FileJumpListMaxItems;
-            if (n < 5) n = 20;
-            return n > 100 ? 100 : n;
         }
     }
 
@@ -542,8 +556,10 @@ public class AppSettings
                         settings.RecentFolderMaxCount = 5;
                     if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
                         settings.RecentFolderAutoAddMinCount = 1;
-                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpListMaxItems), out _))
-                        settings.FileJumpListMaxItems = 20;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpFavoritesMaxCount), out _))
+                        settings.FileJumpFavoritesMaxCount = 20;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpLivePathsMaxCount), out _))
+                        settings.FileJumpLivePathsMaxCount = 15;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     if (settings.FolderConfirmCounts == null)
@@ -606,8 +622,10 @@ public class AppSettings
                         settings.RecentFolderMaxCount = 5;
                     if (!doc.RootElement.TryGetProperty(nameof(RecentFolderAutoAddMinCount), out _))
                         settings.RecentFolderAutoAddMinCount = 1;
-                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpListMaxItems), out _))
-                        settings.FileJumpListMaxItems = 20;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpFavoritesMaxCount), out _))
+                        settings.FileJumpFavoritesMaxCount = 20;
+                    if (!doc.RootElement.TryGetProperty(nameof(FileJumpLivePathsMaxCount), out _))
+                        settings.FileJumpLivePathsMaxCount = 15;
                     if (settings.FolderFavorites == null)
                         settings.FolderFavorites = new List<FolderFavoriteEntry>();
                     if (settings.FolderConfirmCounts == null)
@@ -793,7 +811,8 @@ public class AppSettings
         RecentFileDialogFolders = RecentFileDialogFolders.ToList(),
         RecentFolderMaxCount = RecentFolderMaxCount,
         RecentFolderAutoAddMinCount = RecentFolderAutoAddMinCount,
-        FileJumpListMaxItems = FileJumpListMaxItems,
+        FileJumpFavoritesMaxCount = FileJumpFavoritesMaxCount,
+        FileJumpLivePathsMaxCount = FileJumpLivePathsMaxCount,
         FolderConfirmCounts = FolderConfirmCounts != null
             ? new Dictionary<string, int>(FolderConfirmCounts, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),

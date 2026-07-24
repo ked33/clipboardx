@@ -151,7 +151,8 @@ public partial class SettingsWindow : Window
         _pendingFileJumpPickerEverythingFolderSearch = settings.FileJumpPickerEverythingFolderSearch;
         FileJumpEverythingFolderText.Text = _pendingFileJumpPickerEverythingFolderSearch ? "开启" : "关闭";
 
-        FileJumpListMaxItemsBox.Text = settings.FileJumpListMaxItems.ToString();
+        FileJumpFavoritesMaxCountBox.Text = settings.FileJumpFavoritesMaxCount.ToString();
+        FileJumpLivePathsMaxCountBox.Text = settings.FileJumpLivePathsMaxCount.ToString();
         RecentFolderMaxCountBox.Text = settings.RecentFolderMaxCount.ToString();
         RecentFolderAutoAddMinCountBox.Text = settings.RecentFolderAutoAddMinCount.ToString();
 
@@ -1184,9 +1185,16 @@ public partial class SettingsWindow : Window
         }
 #endif
 
-        if (!int.TryParse(FileJumpListMaxItemsBox.Text, out var jumpListMaxItems) || jumpListMaxItems < 5 || jumpListMaxItems > 100)
+        if (!int.TryParse(FileJumpFavoritesMaxCountBox.Text, out var favMaxCount) || favMaxCount < 0 || favMaxCount > 50)
         {
-            System.Windows.MessageBox.Show("跳转列表目录总数应在 5 ~ 100 之间", "提示",
+            System.Windows.MessageBox.Show("收藏最大数量应在 0 ~ 50 之间", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!int.TryParse(FileJumpLivePathsMaxCountBox.Text, out var liveMaxCount) || liveMaxCount < 0 || liveMaxCount > 50)
+        {
+            System.Windows.MessageBox.Show("实时路径最大数量应在 0 ~ 50 之间", "提示",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1240,7 +1248,8 @@ public partial class SettingsWindow : Window
         _settings.FileJumpAutoOnFirstClick = _pendingFileJumpAutoNavigateBest;
         _settings.FileJumpAutoSyncOnReturn = _pendingFileJumpAutoSyncOnReturn;
         _settings.FileJumpPickerEverythingFolderSearch = _pendingFileJumpPickerEverythingFolderSearch;
-        _settings.FileJumpListMaxItems = jumpListMaxItems;
+        _settings.FileJumpFavoritesMaxCount = favMaxCount;
+        _settings.FileJumpLivePathsMaxCount = liveMaxCount;
         _settings.RecentFolderMaxCount = recentMaxCount;
         _settings.RecentFolderAutoAddMinCount = recentAutoAddMin;
 #if CLIPX_FILEJUMP && CLIPX_CLIPBOARD

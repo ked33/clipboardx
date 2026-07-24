@@ -3681,15 +3681,21 @@ public partial class PopupWindow : Window
         if (_activeFileJumpPicker != null || _fileJumpPickerOpenInProgress) return;
 
         var candidates = new List<FileJumpCandidate>();
+        var favCap = _appSettings.EffectiveFileJumpFavoritesMaxCount;
+        var favShown = 0;
 
         foreach (var fav in _appSettings.FolderFavorites)
         {
+            if (favShown >= favCap) break;
             if (string.IsNullOrWhiteSpace(fav.Path)) continue;
             try
             {
                 var full = Path.GetFullPath(fav.Path.Trim());
                 if (Directory.Exists(full))
+                {
                     candidates.Add(new FileJumpCandidate("收藏", full));
+                    favShown++;
+                }
             }
             catch { /* ignore */ }
         }
@@ -3710,11 +3716,6 @@ public partial class PopupWindow : Window
                 catch { /* ignore */ }
             }
         }
-
-        // 全局收藏/常用选择窗同样遵守跳转列表目录总数（收藏优先）
-        var maxTotal = _appSettings.EffectiveFileJumpListMaxItems;
-        if (candidates.Count > maxTotal)
-            candidates = candidates.Take(maxTotal).ToList();
 
         Win32.GetCursorPos(out var pos);
         var picker = new FileDialogJumpPickerWindow(

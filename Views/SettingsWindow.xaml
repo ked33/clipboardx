@@ -806,35 +806,47 @@
                         </Border>
 
                         <StackPanel Grid.Row="18" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表无检索时最多显示多少条目录（5～100，默认 20）。含收藏、资源管理器等实时路径与常用路径；优先保留收藏，其次实时路径，最后常用路径。输入关键词检索时不截断。">
-                                <TextBlock Text="跳转列表目录总数" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表中「收藏」最多显示几条（0～50，默认 20）。0 表示不显示收藏；不会删除已保存的收藏项。">
+                                <TextBlock Text="收藏最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                         </StackPanel>
-                        <TextBox x:Name="FileJumpListMaxItemsBox" Grid.Row="18" Grid.Column="1"
+                        <TextBox x:Name="FileJumpFavoritesMaxCountBox" Grid.Row="18" Grid.Column="1"
                                  HorizontalAlignment="Right" Width="140"
                                  FontSize="14" Padding="8,6"
-                                 ToolTip="跳转列表无检索时最多显示多少条目录（5～100，默认 20）。含收藏、资源管理器等实时路径与常用路径；优先保留收藏，其次实时路径，最后常用路径。输入关键词检索时不截断。"
+                                 ToolTip="跳转列表中「收藏」最多显示几条（0～50，默认 20）。0 表示不显示收藏；不会删除已保存的收藏项。"
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
 
                         <StackPanel Grid.Row="20" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。不含收藏与资源管理器实时路径。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。">
-                                <TextBlock Text="常用路径最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表中资源管理器、Z 序推测等「实时路径」最多显示几条（0～50，默认 15）。0 表示不显示实时路径。">
+                                <TextBlock Text="实时路径最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                         </StackPanel>
-                        <TextBox x:Name="RecentFolderMaxCountBox" Grid.Row="20" Grid.Column="1"
+                        <TextBox x:Name="FileJumpLivePathsMaxCountBox" Grid.Row="20" Grid.Column="1"
                                  HorizontalAlignment="Right" Width="140"
                                  FontSize="14" Padding="8,6"
-                                 ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。不含收藏与资源管理器实时路径。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。"
+                                 ToolTip="跳转列表中资源管理器、Z 序推测等「实时路径」最多显示几条（0～50，默认 15）。0 表示不显示实时路径。"
                                  Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
                                  BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
 
                         <StackPanel Grid.Row="22" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Background="Transparent" Padding="0,4" ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。">
+                                <TextBlock Text="常用路径最大数量" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
+                            </Border>
+                        </StackPanel>
+                        <TextBox x:Name="RecentFolderMaxCountBox" Grid.Row="22" Grid.Column="1"
+                                 HorizontalAlignment="Right" Width="140"
+                                 FontSize="14" Padding="8,6"
+                                 ToolTip="跳转列表中「常用路径」最多显示/保存几条（1～10）。调大后需再确认更多目录才会出现新条目；调小会立即裁掉最旧条目。"
+                                 Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource PrimaryText}"
+                                 BorderBrush="{DynamicResource ThemeBorder}" CaretBrush="{DynamicResource PrimaryText}" />
+
+                        <StackPanel Grid.Row="24" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="Transparent" Padding="0,4" ToolTip="在文件对话框中确认（打开/保存）多少次后，该路径才会自动加入常用路径列表（默认 1）。">
                                 <TextBlock Text="自动加入常用路径阈值" Foreground="{DynamicResource PrimaryText}" FontSize="14" />
                             </Border>
                         </StackPanel>
-                        <TextBox x:Name="RecentFolderAutoAddMinCountBox" Grid.Row="22" Grid.Column="1"
+                        <TextBox x:Name="RecentFolderAutoAddMinCountBox" Grid.Row="24" Grid.Column="1"
                                  HorizontalAlignment="Right" Width="140"
                                  FontSize="14" Padding="8,6"
                                  ToolTip="在文件对话框中确认（打开/保存）多少次后，该路径才会自动加入常用路径列表（默认 1）。"

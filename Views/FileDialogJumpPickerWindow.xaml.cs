@@ -813,8 +813,17 @@ public partial class FileDialogJumpPickerWindow : Window
         _masterRows.Clear();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // 三类独立上限：收藏 / 实时路径 / 常用路径
+        var favCap = _settings.EffectiveFileJumpFavoritesMaxCount;
+        var liveCap = _settings.EffectiveFileJumpLivePathsMaxCount;
+        var recentCap = _settings.EffectiveRecentFolderMaxCount;
+        var favShown = 0;
+        var liveShown = 0;
+        var recentShown = 0;
+
         foreach (var fav in _settings.FolderFavorites)
         {
+            if (favShown >= favCap) break;
             if (string.IsNullOrWhiteSpace(fav.Path)) continue;
             try
             {
@@ -822,13 +831,11 @@ public partial class FileDialogJumpPickerWindow : Window
                 if (!Directory.Exists(full)) continue;
                 if (!seen.Add(full)) continue;
                 _masterRows.Add(new FileJumpPickerRow("收藏", full, true, fav.Phrase));
+                favShown++;
             }
             catch { /* ignore */ }
         }
 
-        // 采集结果里的「常用路径*」再按当前设置上限截断，避免列表与配置脱节
-        var recentCap = _settings.EffectiveRecentFolderMaxCount;
-        var recentShown = 0;
         foreach (var c in _collectorSnapshot)
         {
             if (seen.Contains(c.Path)) continue;
@@ -843,6 +850,11 @@ public partial class FileDialogJumpPickerWindow : Window
                 if (recentShown >= recentCap) continue;
                 recentShown++;
             }
+            else
+            {
+                if (liveShown >= liveCap) continue;
+                liveShown++;
+            }
 
             seen.Add(c.Path);
             _masterRows.Add(new FileJumpPickerRow(c.Label, c.Path, false));
@@ -850,7 +862,7 @@ public partial class FileDialogJumpPickerWindow : Window
 
         sw.Stop();
         PerfLog("build_master_list", sw.ElapsedMilliseconds, 25,
-            $"fav={favCount} snapshot={snapshotCount} rows={_masterRows.Count}");
+            $"fav={favCount}/{favShown} live={liveShown} recent={recentShown} snapshot={snapshotCount} rows={_masterRows.Count}");
     }
 
     private void RefreshFilter(int? preferListIndex = null, string? preferPath = null, bool scrollSelection = true)
@@ -872,31 +884,14 @@ public partial class FileDialogJumpPickerWindow : Window
             if (!string.IsNullOrEmpty(query))
                 seq = seq.Where(r => r.MatchesSearch(query));
 
-            // 无检索：按「收藏 → 非常用采集 → 常用路径」优先级截断到目录总数上限
-            // 有检索：不截断，便于搜到被挤出首屏的项
-            IEnumerable<FileJumpPickerRow> ordered;
-            if (string.IsNullOrEmpty(query))
-            {
-                ordered = seq
-                    .OrderBy(r => r.IsFavorite ? 0 : IsRecentJumpLabel(r.SourceLabel) ? 2 : 1)
-                    .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
-                var maxTotal = _settings.EffectiveFileJumpListMaxItems;
-                foreach (var r in ordered)
-                {
-                    _displayRows.Add(r);
-                    if (_displayRows.Count >= maxTotal)
-                        break;
-                }
-            }
-            else
-            {
-                ordered = seq
-                    .OrderByDescending(r => r.IsFavorite)
-                    .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
-                foreach (var r in ordered)
-                    _displayRows.Add(r);
-            }
+            var sorted = seq
+                .OrderByDescending(r => r.IsFavorite && !string.IsNullOrEmpty(query))
+                .ThenByDescending(r => r.IsFavorite)
+                .ThenBy(r => r.IsFavorite ? 0 : IsRecentJumpLabel(r.SourceLabel) ? 2 : 1)
+                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase);
 
+            foreach (var r in sorted)
+                _displayRows.Add(r);
         }
 
         _prevQuickIndexFirstVisible = -1; // 列表重建，重置索引缓存
