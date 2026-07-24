@@ -407,6 +407,17 @@ public partial class App : Application
 #endif
             _settings.EnableShellNavigateInject = copy.EnableShellNavigateInject;
             _settings.FileJumpAutoOnFirstClick = copy.FileJumpAutoOnFirstClick;
+            _settings.FileJumpPickerEverythingFolderSearch = copy.FileJumpPickerEverythingFolderSearch;
+            // 设置窗改的是 ShallowCopy；这两项此前漏合并，导致「常用路径最大数量/阈值」保存不生效
+            _settings.RecentFolderMaxCount = Math.Clamp(copy.RecentFolderMaxCount, 1, 10);
+            _settings.RecentFolderAutoAddMinCount = Math.Clamp(copy.RecentFolderAutoAddMinCount, 1, 100);
+            _settings.TrimRecentFileDialogFoldersToMax();
+#if CLIPX_FILEJUMP && CLIPX_CLIPBOARD
+            _settings.ExplorerEverythingQuickFindEnabled = copy.ExplorerEverythingQuickFindEnabled;
+            _settings.ExplorerEverythingQuickFindMaxResults = Math.Clamp(copy.ExplorerEverythingQuickFindMaxResults, 1, 2000);
+            _settings.ExplorerQuickFindOpenMode = copy.ExplorerQuickFindOpenMode;
+            _settings.UseFindXSearch = copy.UseFindXSearch;
+#endif
             _settings.PreviewMaxLines = copy.PreviewMaxLines;
             _settings.PopupPanelWidth = copy.PopupPanelWidth;
             _settings.PopupPanelMaxHeight = copy.PopupPanelMaxHeight;

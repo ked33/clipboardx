@@ -274,11 +274,20 @@ public class AppSettings
             }
         });
         RecentFileDialogFolders.Insert(0, normalized);
-        while (RecentFileDialogFolders.Count > RecentFolderMaxCount)
-            RecentFileDialogFolders.RemoveAt(RecentFileDialogFolders.Count - 1);
-
-        LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
+        TrimRecentFileDialogFoldersToMax();
         Save();
+    }
+
+    /// <summary>
+    /// 按 <see cref="RecentFolderMaxCount"/> 裁剪常用路径列表（调小上限后立即生效）。
+    /// </summary>
+    public void TrimRecentFileDialogFoldersToMax()
+    {
+        RecentFileDialogFolders ??= new List<string>();
+        var max = RecentFolderMaxCount < 1 ? 5 : RecentFolderMaxCount;
+        while (RecentFileDialogFolders.Count > max)
+            RecentFileDialogFolders.RemoveAt(RecentFileDialogFolders.Count - 1);
+        LastFileDialogFolder = RecentFileDialogFolders.Count > 0 ? RecentFileDialogFolders[0] : "";
     }
 
     private static bool IsApplicationInstallDirectory(string path)
